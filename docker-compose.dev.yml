@@ -1,0 +1,16 @@
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: ./
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./:/app
+    env_file:
+      - config/.env
+      - config/dev.env
+    environment:
+      - ENV=dev
+    ports:
+      - "5500:5300"
