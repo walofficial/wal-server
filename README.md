@@ -1,5 +1,5 @@
 # MENT Backend Service
-A robust FastAPI-based backend service powering MENT, a social platform that combines task-based interactions with social networking features. The service handles user verification, real-time chat, task management, and media processing through a microservices architecture.
+A robust FastAPI-based backend service powering MENT, a location based social network. The service handles users feed, real-time chat, and media processing through a microservices architecture.
 
 ## Overview
 MENT is designed as a social platform where interactions are driven by tasks and challenges rather than traditional social networking features. Users can create, verify, and interact with various challenges, making social connections through shared activities and achievements.
