@@ -14,8 +14,7 @@ To set up your development environment, clone the repository and create the nece
 git clone https://github.com/mntorg/mnt-server
 
 # Create necessary configuration files
-cp config/.env.example config/.env
-cp config/dev.env.example config/dev.env
+cp config/.env.template config/.env
 ```
 
 Start the development server using Docker Compose:
