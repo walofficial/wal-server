@@ -1,0 +1,128 @@
+services:
+  mongo-db:
+    image: mongo:latest
+    container_name: mnt-mongo-db
+    command: mongod --quiet --logpath /dev/null
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./data/db:/data/db
+    env_file:
+      - config/local.env
+    networks:
+      - mnt-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand('ping').ok"]
+      interval: 10s
+      timeout: 15s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    restart: unless-stopped
+
+  google-pubsub:
+    build:
+      context: ./docker/google-pubsub
+      dockerfile: Dockerfile
+    container_name: google-pubsub
+    environment:
+      - PUBSUB_DATA_DIR=/data/pubsub
+      - PUBSUB_HOST_PORT=0.0.0.0:8085
+    env_file:
+      - config/.env
+    volumes:
+      - ./data/pubsub:/data/pubsub
+    ports:
+      - "8085:8085"
+    networks:
+      - mnt-network
+    restart: unless-stopped
+
+  google-cloud-storage:
+    image: fsouza/fake-gcs-server
+    container_name: google-cloud-storage
+    ports:
+      - "4443:4443"
+    volumes:
+      - ./data/gcs:/data/gcs
+    networks:
+      - mnt-network
+    restart: unless-stopped
+
+  google-cloud-tasks:
+    image: ghcr.io/aertje/cloud-tasks-emulator:latest
+    container_name: google-cloud-tasks
+    command: -host 0.0.0.0 -port 8123
+    ports:
+      - "8123:8123"
+    networks:
+      - mnt-network
+    restart: unless-stopped
+
+  redis:
+    build:
+      context: ./docker/redis
+      dockerfile: Dockerfile
+    container_name: redis
+    env_file:
+      - config/local.env
+    volumes:
+      - ./data/redis:/data/redis
+    ports:
+      - "6379:6379"
+    networks:
+      - mnt-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "example", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  mnt-api:
+    build:
+      dockerfile: ./docker/Dockerfile
+    container_name: mnt-api
+    ports:
+      - "5500:5300"
+    environment:
+      - PORT=5300
+      - PUBSUB_EMULATOR_HOST=google-pubsub:8085
+      - STORAGE_EMULATOR_HOST=google-cloud-storage:4443
+      - GOOGLE_APPLICATION_CREDENTIALS=/home/.config/gcloud/application_default_credentials.json
+    volumes:
+      - ./src/:/app/src
+      - ${HOME}/.config/gcloud:/home/.config/gcloud:ro
+    env_file:
+      - config/.env
+      - config/local.env
+    develop:
+      watch:
+        - action: sync
+          path: .
+          target: /app
+          ignore:
+            - .venv/
+        - action: rebuild
+          path: ./uv.lock
+    networks:
+      - mnt-network
+    depends_on:
+      mongo-db:
+        condition: service_healthy
+      google-pubsub:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+networks:
+  mnt-network:
+    driver: bridge

@@ -1,0 +1,30 @@
+services:
+  mnt-api:
+    build:
+      dockerfile: ./docker/Dockerfile
+    container_name: mnt-api
+    ports:
+      - "5500:5300"
+    volumes:
+      - ./src/:/app/src
+      - ${HOME}/.config/gcloud/application_default_credentials.json:/home/.config/gcloud/application_default_credentials.json:ro
+    env_file:
+      - config/.env
+      - config/.env.dev
+    environment:
+      - PORT=5300
+      - GOOGLE_APPLICATION_CREDENTIALS=/home/.config/gcloud/application_default_credentials.json
+    develop:
+      watch:
+        - action: sync
+          path: .
+          target: /app
+          ignore:
+            - .venv/
+        - action: rebuild
+          path: ./uv.lock
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M

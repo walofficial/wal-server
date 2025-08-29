@@ -1,0 +1,8 @@
+{
+  "input_type": 0,
+  "name": "dji-test-1",
+  "room_name": "dji-test-1-room",
+  "participant_identity": "dji-test-1-participant",
+  "participant_name": "dji-test-1-participant",
+  "enable_transcoding": true
+}

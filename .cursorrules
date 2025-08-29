@@ -1,0 +1,2 @@
+Make sure to use mongo pipelines to get reference documents instead of using loops.
+When asked to implement a feature or fix a bug, try to also define some logic in new or existing files.

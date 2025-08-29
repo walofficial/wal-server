@@ -17,3 +17,16 @@ coverage.xml
 .mypy_cache
 .pytest_cache
 .hypothesis
+.venv
+# Additional exclusions
+.docker
+.dockerignore
+docker-compose*.yml
+Dockerfile*
+README.md
+.gitignore
+.github
+.gitlab-ci.yml
+*.md
+tests/
+docs/

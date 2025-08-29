@@ -1,0 +1,16 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff Check
+        entry: ruff check --no-cache .
+        language: python
+        types: [python]
+        stages: [pre-commit]
+        args: [--fix]
+      - id: ruff-format
+        name: Ruff Format
+        entry: ruff format
+        language: python
+        types: [python]
+        stages: [pre-commit]

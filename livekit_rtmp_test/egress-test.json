@@ -1,0 +1,15 @@
+{
+  "request": {
+    "track_composite": {
+      "room_name": "dji-test-1-room",
+
+      "file": {
+        "filepath": "/tmp/drone-recording.mp4"
+      },
+
+      "video_encoding": {
+        "preset": "HD_30"
+      }
+    }
+  }
+}

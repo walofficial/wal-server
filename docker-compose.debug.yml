@@ -1,0 +1,35 @@
+services:
+  mnt-api:
+    build:
+      dockerfile: ./docker/Dockerfile
+    command:
+      [
+        "sh",
+        "-c",
+        "pip install debugpy -t /tmp && python -Xfrozen_modules=off /tmp/debugpy --wait-for-client --listen 0.0.0.0:5678 -m uvicorn ment_api.app:app --host 0.0.0.0 --port 5300 --reload",
+      ]
+    container_name: mnt-api
+    ports:
+      - 5500:5300
+      - 5678:5678
+    volumes:
+      - ./src/:/app/src
+    env_file:
+      - config/.env
+      - config/dev.env
+    environment:
+      - PORT=5300
+    develop:
+      watch:
+        - action: sync
+          path: .
+          target: /app
+          ignore:
+            - .venv/
+        - action: rebuild
+          path: ./uv.lock
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
