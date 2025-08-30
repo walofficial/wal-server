@@ -23,6 +23,9 @@
 
 [![Project license](https://img.shields.io/github/license/walofficial/wal-server?style=flat-square)](LICENSE)
 
+[![GitHub deployments](https://img.shields.io/github/deployments/walofficial/wal-server/production?style=for-the-badge&logo=appveyor&label=Production%20Status)](https://github.com/walofficial/wal-server/deployments)
+[![GitHub deployments](https://img.shields.io/github/deployments/walofficial/wal-server/staging?style=for-the-badge&logo=appveyor&label=Staging%20Status)](https://github.com/walofficial/wal-server/deployments)
+
 [![Pull Requests welcome](https://img.shields.io/badge/PRs-welcome-4CAF50.svg?style=flat-square)](https://github.com/walofficial/wal-server/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
 [![code with love by nikasamadalashvili](https://img.shields.io/badge/%3C%2F%3E%20with%20%E2%99%A5%20by-nikasamadalashvili-2196F3.svg?style=flat-square)](https://github.com/nikasamadalashvili)
 [![code with love by nshelia](https://img.shields.io/badge/%3C%2F%3E%20with%20%E2%99%A5%20by-nshelia-9C27B0.svg?style=flat-square)](https://github.com/nshelia)
