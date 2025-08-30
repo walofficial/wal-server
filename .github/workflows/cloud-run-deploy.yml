@@ -31,11 +31,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Debug OIDC Claims
-        uses: github/actions-oidc-debugger@main
-        with:
-          audience: "${{ github.server_url }}/${{ github.repository_owner }}"
-
       - id: auth
         name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
@@ -81,16 +76,12 @@ jobs:
       url: ${{ steps.deploy_staging.outputs.url }}
 
     steps:
-      - name: Debug OIDC Claims
-        uses: github/actions-oidc-debugger@main
-        with:
-          audience: "${{ github.server_url }}/${{ github.repository_owner }}"
-
       - id: auth
         name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: projects/880207287631/locations/global/workloadIdentityPools/github/providers/wal-server
+          project_id: ${{ env.PROJECT_ID }}
 
       - name: Deploy to Staging
         id: deploy_staging
@@ -115,6 +106,7 @@ jobs:
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: projects/880207287631/locations/global/workloadIdentityPools/github/providers/wal-server
+          project_id: ${{ env.PROJECT_ID }}
 
       - name: Deploy to Production
         id: deploy_production
