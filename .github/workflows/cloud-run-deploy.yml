@@ -34,7 +34,7 @@ jobs:
       - name: Debug OIDC Claims
         uses: github/actions-oidc-debugger@main
         with:
-          audience: '${{ github.server_url }}/${{ github.repository_owner }}
+          audience: "${{ github.server_url }}/${{ github.repository_owner }}"
 
       - id: auth
         name: Authenticate to Google Cloud
