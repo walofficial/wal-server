@@ -23,8 +23,9 @@
 
 [![Project license](https://img.shields.io/github/license/walofficial/wal-server?style=flat-square)](LICENSE)
 
-[![Pull Requests welcome](https://img.shields.io/badge/PRs-welcome-ff69b4.svg?style=flat-square)](https://github.com/walofficial/wal-server/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
-[![code with love by nikasamadalashvili](https://img.shields.io/badge/%3C%2F%3E%20with%20%E2%99%A5%20by-nikasamadalashvili-ff1414.svg?style=flat-square)](https://github.com/nikasamadalashvili)
+[![Pull Requests welcome](https://img.shields.io/badge/PRs-welcome-4CAF50.svg?style=flat-square)](https://github.com/walofficial/wal-server/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
+[![code with love by nikasamadalashvili](https://img.shields.io/badge/%3C%2F%3E%20with%20%E2%99%A5%20by-nikasamadalashvili-2196F3.svg?style=flat-square)](https://github.com/nikasamadalashvili)
+[![code with love by nshelia-da](https://img.shields.io/badge/%3C%2F%3E%20with%20%E2%99%A5%20by-nshelia--da-9C27B0.svg?style=flat-square)](https://github.com/nshelia-da)
 
 </div>
 
@@ -375,7 +376,10 @@ Please read [our contribution guidelines](docs/CONTRIBUTING.md), and thank you f
 
 ## Authors & contributors
 
-The original setup of this repository is by [Nika Samadalashvili](https://github.com/nikasamadalashvili).
+**Authors:**
+
+- [Nika Samadalashvili](https://github.com/nikasamadalashvili) - Original setup and development
+- [nshelia-da](https://github.com/nshelia-da) - Original setup and development
 
 For a full list of all authors and contributors, see [the contributors page](https://github.com/walofficial/wal-server/contributors).
 
