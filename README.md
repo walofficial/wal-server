@@ -25,7 +25,7 @@
 
 [![Pull Requests welcome](https://img.shields.io/badge/PRs-welcome-4CAF50.svg?style=flat-square)](https://github.com/walofficial/wal-server/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
 [![code with love by nikasamadalashvili](https://img.shields.io/badge/%3C%2F%3E%20with%20%E2%99%A5%20by-nikasamadalashvili-2196F3.svg?style=flat-square)](https://github.com/nikasamadalashvili)
-[![code with love by nshelia-da](https://img.shields.io/badge/%3C%2F%3E%20with%20%E2%99%A5%20by-nshelia--da-9C27B0.svg?style=flat-square)](https://github.com/nshelia-da)
+[![code with love by nshelia](https://img.shields.io/badge/%3C%2F%3E%20with%20%E2%99%A5%20by-nshelia-9C27B0.svg?style=flat-square)](https://github.com/nshelia)
 
 </div>
 
@@ -364,7 +364,6 @@ If you want to say **thank you** or/and support active development of WAL:
 
 - Add a [GitHub Star](https://github.com/walofficial/wal-server) to the project.
 - Tweet about the WAL.
-- Write interesting articles about the project on [Dev.to](https://dev.to/), [Medium](https://medium.com/) or your personal blog.
 
 Together, we can make WAL **better**!
 
@@ -379,14 +378,11 @@ Please read [our contribution guidelines](docs/CONTRIBUTING.md), and thank you f
 **Authors:**
 
 - [Nika Samadalashvili](https://github.com/nikasamadalashvili) - Original setup and development
-- [nshelia-da](https://github.com/nshelia-da) - Original setup and development
+- [nshelia](https://github.com/nshelia) - Original setup and development
 
 For a full list of all authors and contributors, see [the contributors page](https://github.com/walofficial/wal-server/contributors).
 
 ## Security
-
-WAL follows good practices of security, but 100% security cannot be assured.
-WAL is provided **"as is"** without any **warranty**. Use at your own risk.
 
 _For more information and to report security issues, please refer to our [security documentation](docs/SECURITY.md)._
 
