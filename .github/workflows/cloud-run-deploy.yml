@@ -14,6 +14,7 @@ env:
   REGION: europe-west3
   REPOSITORY: cloud-run-source-deploy
   SERVICE: wal-server
+  CLOUD_RUN_NAME: mnt-api
   SERVICE_ACCOUNT: "wal-backend-service-account@feisty-wall-394014.iam.gserviceaccount.com"
   WORKLOAD_IDENTITY_PROVIDER: projects/880207287631/locations/global/workloadIdentityPools/github/providers/wal-server
 
@@ -90,7 +91,7 @@ jobs:
         id: deploy_staging
         uses: google-github-actions/deploy-cloudrun@v2
         with:
-          service: ${{ env.SERVICE }}-staging
+          service: ${{ env.CLOUD_RUN_NAME }}-staging
           region: ${{ env.REGION }}
           image: ${{ needs.build.outputs.image }}
 
@@ -116,7 +117,7 @@ jobs:
         id: deploy_production
         uses: google-github-actions/deploy-cloudrun@v2
         with:
-          service: ${{ env.SERVICE }}
+          service: ${{ env.CLOUD_RUN_NAME }}
           region: ${{ env.REGION }}
           image: ${{ needs.build.outputs.image }}
 
