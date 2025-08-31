@@ -38,8 +38,6 @@ from ment_api.services.translation_service import publish_translation_request
 
 logger = logging.getLogger(__name__)
 
-IS_DEV = settings.env == "dev"
-
 
 async def update_verification_status(
     verification_id: CustomObjectId, status: str, additional_data: Optional[Dict] = None
@@ -376,7 +374,7 @@ async def check_fact(
         # is_youtube_video = verification.get("youtube_id") is not None
 
         budget_tokens = 30000
-        if IS_DEV:
+        if settings.env == "dev":
             budget_tokens = 30000
 
         sources_length = len(verification.get("sources", []))

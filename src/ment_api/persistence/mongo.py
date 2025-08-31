@@ -221,3 +221,34 @@ async def initialize_db() -> None:
     await mongo_client.db["external_articles"].create_index(
         [("external_id", ASCENDING)], unique=True
     )
+    # Ensure Atlas Search index on verifications collection
+    try:
+        search_indexes_cursor = await mongo_client.db[
+            "verifications"
+        ].list_search_indexes()
+        existing_search_indexes = await search_indexes_cursor.to_list(length=None)
+        existing_search_index_names = [
+            idx.get("name") for idx in existing_search_indexes
+        ]
+
+        if "default" not in existing_search_index_names:
+            await mongo_client.db["verifications"].create_search_index(
+                {
+                    "definition": {
+                        "mappings": {
+                            "dynamic": True,
+                        }
+                    },
+                    "name": "default",
+                }
+            )
+            logger.info(
+                "Created Atlas Search index 'default' on 'verifications' collection"
+            )
+        else:
+            logger.info(
+                "Atlas Search index 'default' already exists on 'verifications' collection"
+            )
+    except Exception as e:
+        logger.warning(f"Failed to ensure Atlas Search index on 'verifications': {e}")
+
