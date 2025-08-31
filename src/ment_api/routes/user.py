@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from typing import Annotated, Any, List, Optional
 
 from fastapi import (
@@ -790,14 +789,13 @@ async def get_user_profile(
     operation_id="get_user_profile_by_username",
 )
 async def get_user_profile_by_username(username: str):
-    IS_DEV = os.environ.get("ENV") == "dev"
 
     pipeline = [
         {
             "$search": {
                 "index": (
                     "username_search_index_dev"
-                    if IS_DEV
+                    if settings.env == "dev"
                     else "username_search_index_prod"
                 ),
                 "wildcard": {
