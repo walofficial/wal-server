@@ -726,7 +726,6 @@ async def generate_social_media_content(
 
         # Build match conditions based on parameters
         match_conditions = {
-            "is_generated_news": {"$exists": False},
             "text_content": {"$exists": True, "$ne": ""},
             "fact_check_data.factuality": {"$lt": 0.51, "$exists": True},
             "assignee_user_id": {"$in": list(bot_name_to_id().values())},
