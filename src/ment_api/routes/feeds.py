@@ -728,6 +728,10 @@ async def generate_social_media_content(
         match_conditions = {
             "text_content": {"$exists": True, "$ne": ""},
             "fact_check_data.factuality": {"$lt": 0.51, "$exists": True},
+            "fact_check_data.references": {
+                "$exists": True,
+                "$size": {"$gte": 3},
+            },
             "assignee_user_id": {"$in": list(bot_name_to_id().values())},
             "$or": [
                 {"used_by_zapier": {"$exists": False}},
