@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 import random
 import re
 import urllib.parse
@@ -62,8 +61,7 @@ from ment_api.services.notification_service import (
 from ment_api.services.og_service import get_og_preview
 from ment_api.services.video_processor_service import publish_video_processor_request
 from ment_api.utils.bot_ids import bot_name_to_id
-
-IS_DEV = os.environ.get("ENV") == "dev"
+from ment_api.configurations.config import settings
 
 # Initialize loggers
 logger = logging.getLogger(__name__)
@@ -152,7 +150,7 @@ async def _fetch_youtube_metadata_and_process_in_background(
 async def get_location_feeds_pipeline(category_id: CustomObjectId):
     """Common pipeline for getting tasks with live user and verification counts"""
     return [
-        {"$match": {"feed_category_id": category_id, "hidden": IS_DEV}},
+        {"$match": {"feed_category_id": category_id, "hidden": settings.env == "dev"}},
         {
             "$project": {
                 "_id": 1,
@@ -202,7 +200,7 @@ async def get_location_feeds(
         is_at_location, nearest_location = await is_on_feed_location(
             feed_obj.id, user_location
         )
-        if IS_DEV:
+        if settings.env == "dev":
             is_at_location = True
         if is_at_location:
             feeds_at_location.append(feed_obj)
@@ -466,7 +464,6 @@ async def publish_post(
             "title": "",
             "external_video": extracted_media,  # Store original extracted info (URL, platform)
             "ai_video_summary_status": initial_ai_video_summary_status,
-            "preview_data": None,  # Will be filled by background tasks
             # UI can immediately show pending status if there's media to process without refetching
             "metadata_status": MetadataStatus.PENDING,  # Set pending status if there's media to process
         }
@@ -729,7 +726,6 @@ async def generate_social_media_content(
 
         # Build match conditions based on parameters
         match_conditions = {
-            "is_generated_news": {"$exists": False},
             "text_content": {"$exists": True, "$ne": ""},
             "fact_check_data.factuality": {"$lt": 0.51, "$exists": True},
             "assignee_user_id": {"$in": list(bot_name_to_id().values())},
@@ -778,10 +774,14 @@ async def generate_social_media_content(
 
         if not content_items:
             logger.info("No content items found for social media generation")
-            raise HTTPException(
-                status_code=404,
-                detail="No appropriate content found for social media generation",
-            )
+            return {"error": "No content items found for social media generation"}
+
+        # filter content items so that it only show references length >= 3
+        content_items = [
+            item
+            for item in content_items
+            if len(item.get("fact_check_data", {}).get("references", [])) >= 3
+        ]
 
         # Select a random item from the results
         selected_item = random.choice(content_items)

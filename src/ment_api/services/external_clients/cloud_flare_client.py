@@ -12,6 +12,11 @@ def _upload_image_sync(
 ) -> ImageWithDims:
     """Synchronous upload function to run in thread pool"""
     try:
+        # Log file size
+        logging.info(
+            f"Processing image {destination_file_name} with size {len(file)} bytes"
+        )
+
         # Get image dimensions
         image_stream = io.BytesIO(file)
         img = Image.open(image_stream)
@@ -42,9 +47,9 @@ def _upload_image_sync(
 
         return ImageWithDims(
             url=blob.public_url,
-            width=None,
-            height=None,
-            aspectRatio=None,
+            width=1920,
+            height=1080,
+            aspectRatio={"width": 1920, "height": 1080},
         )
 
 

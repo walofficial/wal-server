@@ -19,6 +19,7 @@ from ment_api.common.custom_object_id import CustomObjectId
 from ment_api.models.location_feed_post import FeedPost
 from ment_api.persistence import mongo
 from ment_api.persistence.mongo import create_translation_projection
+from ment_api.configurations.config import settings
 from ment_api.services.redis_service import get_redis_dependency
 from ment_api.utils.language_utils import normalize_language_code
 
@@ -86,40 +87,25 @@ async def get_mixed_feed_pipeline(
     if blocked_user_ids:
         match_condition["assignee_user_id"] = {"$nin": blocked_user_ids}
 
-    search_pipeline = [
-        {"$match": match_condition},
-    ]
+    search_pipeline = []
     if search_term:
-        IS_DEV = os.environ.get("ENV") == "dev"
-
         # Add condition to exclude generated news when searching
-        match_condition["is_generated_news"] = {"$exists": False}
-
         search_pipeline = [
             {
                 "$search": {
-                    "index": (
-                        "global_posts_seach_prod"
-                        if IS_DEV
-                        else "global_posts_seach_prod"
-                    ),
+                    "index": ("default" if settings.env == "dev" else "default"),
                     "text": {
                         "query": search_term,
-                        "path": [
-                            "text_content",
-                            "title",
-                            "fact_check_data.reason",
-                            "text_summary",
-                            "ai_video_summary.title",
-                            "ai_video_summary.short_summary",
-                            "social_media_scrape_details.content",
-                            "preview_data.title",
-                            "preview_data.description",
-                        ],
+                        "path": {
+                            "wildcard": "*",
+                        },
                     },
-                }
+                },
             },
-        ] + search_pipeline
+        ]
+
+    # Add match stage after search
+    search_pipeline.append({"$match": match_condition})
 
     user_pipeline = []
 

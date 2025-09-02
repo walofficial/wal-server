@@ -119,7 +119,7 @@ async def lifespan(local_app: FastAPI):
     langfuse.shutdown()
 
     # Clean up message state task
-    cleanup_message_state_task(message_state_task)
+    await cleanup_message_state_task(message_state_task)
 
     # Close Redis connections (both sync and async)
     try:
