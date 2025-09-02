@@ -1,40 +1,130 @@
-<!--- Please provide a general summary of your changes in the title above -->
+<!--
+📝 PR TEMPLATE USAGE GUIDE:
+- REQUIRED sections must be filled out
+- OPTIONAL sections can be deleted if not applicable
+- Check only the applicable items in checklists
+- Replace placeholder text with your actual content
+-->
 
-## Pull Request type
+# Summary
 
-<!-- Please try to limit your pull request to one type; submit multiple pull requests if needed. -->
+<!-- REQUIRED: Provide a concise overview of the changes introduced in this PR -->
 
-Please check the type of change your PR introduces:
+## Related Issues
 
-- [ ] Bugfix
-- [ ] Feature
-- [ ] Code style update (formatting, renaming)
-- [ ] Refactoring (no functional changes, no API changes)
-- [ ] Build-related changes
-- [ ] Documentation content changes
-- [ ] Other (please describe):
+<!-- OPTIONAL: Link to any relevant issues or tickets to provide context. Delete this section if no related issues -->
 
-## What is the current behavior?
+- Closes #[issue-number]
+- Related to #[issue-number]
 
-<!-- Please describe the current behavior that you are modifying, or link to a relevant issue. -->
+## Type of Change
 
-Issue Number: N/A
+<!-- REQUIRED: Please check the type of change your PR introduces -->
 
-## What is the new behavior?
+- [ ] 🐛 Bug fix (non-breaking change which fixes an issue)
+- [ ] ✨ New feature (non-breaking change which adds functionality)
+- [ ] 💄 Code style update (formatting, renaming)
+- [ ] ♻️ Refactoring (no functional changes, no API changes)
+- [ ] 🔧 Build-related changes
+- [ ] 📝 Documentation content changes
+- [ ] ⚡ Performance improvements
+- [ ] 🧪 Tests
+- [ ] 🔒 Security improvements
+- [ ] 🚨 Breaking change (fix or feature that would cause existing functionality to not work as expected)
+- [ ] 🎯 Other (please describe):
 
-<!-- Please describe the behavior or changes that are being added by this PR. -->
+## Changes Made
 
--
--
--
+<!-- REQUIRED: Detail the specific modifications or additions -->
 
-## Does this introduce a breaking change?
+- [ ] Added...
+- [ ] Modified...
+- [ ] Removed...
+- [ ] Fixed...
 
-- [ ] Yes
-- [ ] No
+## Motivation and Context
 
-<!-- If this does introduce a breaking change, please describe the impact and migration path for existing applications below. -->
+<!-- REQUIRED: Explain the purpose of these changes and the problem they solve -->
 
-## Other information
+**Why is this change required? What problem does it solve?**
 
-<!-- Any other information that is important to this PR, such as screenshots of how the component looks before and after the change. -->
+**What is the current behavior?**
+
+**What is the new behavior?**
+
+## How to Test
+
+<!-- REQUIRED: Describe the steps to test the changes -->
+
+1. Step 1
+2. Step 2
+3. Step 3
+
+**Test Configuration:** (Fill in applicable fields only)
+
+- OS:
+- Browser (if applicable):
+- Node version:
+- Python version:
+
+## Screenshots/Demo
+
+<!-- OPTIONAL: Include before and after screenshots for UI changes or GIFs/videos for complex workflows. Delete this section if not applicable -->
+
+### Before
+
+<!-- Screenshot or description of current state -->
+
+### After
+
+<!-- Screenshot or description of new state -->
+
+## Breaking Changes
+
+<!-- REQUIRED: Highlight any changes that could disrupt existing functionality -->
+
+- [ ] Yes - This change breaks existing functionality
+- [ ] No - This change is backward compatible
+
+<!-- If yes, please describe the impact and migration path for existing applications -->
+
+## Checklist
+
+<!-- REQUIRED: Ensure all items are completed before requesting review. Check only applicable items -->
+
+- [ ] My code follows the project's style guidelines
+- [ ] I have performed a self-review of my code
+- [ ] I have commented my code, particularly in hard-to-understand areas
+- [ ] I have made corresponding changes to the documentation
+- [ ] My changes generate no new warnings
+- [ ] I have added tests that prove my fix is effective or that my feature works
+- [ ] New and existing unit tests pass locally with my changes
+- [ ] Any dependent changes have been merged and published
+- [ ] I have used mongo pipelines instead of loops where applicable (per repo guidelines)
+- [ ] I have defined logic in appropriate service files
+
+## Performance Impact
+
+<!-- OPTIONAL: Describe any performance implications. Delete this section if no performance considerations -->
+
+- [ ] No performance impact
+- [ ] Improves performance
+- [ ] May impact performance (please describe)
+
+## Security Considerations
+
+<!-- OPTIONAL: Highlight any security implications. Delete this section if no security considerations -->
+
+- [ ] No security implications
+- [ ] Improves security
+- [ ] May have security implications (please describe)
+
+## Additional Notes
+
+<!-- OPTIONAL: Any other information that is important to this PR. Delete this section if no additional notes -->
+
+**Areas of particular concern:**
+
+**Known limitations:**
+
+**Future improvements:**
