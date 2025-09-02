@@ -397,22 +397,6 @@ async def scrape_social_media(
                             logger.warning(
                                 f"Failed to download image {url}: {resp.status}"
                             )
-                            # Fallback: attempt to fetch via screenshot from scraping infra
-                            try:
-                                async with get_scrape_do_client() as client:
-                                    scrape = await client.scrape_with_screenshot(
-                                        url,
-                                        full_page=False,
-                                        wait_until="load",
-                                        width=680,
-                                        height=1080,
-                                    )
-                                    if scrape and scrape.get("screenshot_data"):
-                                        return scrape.get("screenshot_data")
-                            except Exception as fe:
-                                logger.warning(
-                                    f"Fallback scrape failed for {url}: {fe}"
-                                )
                             return None
                         return await resp.read()
             except Exception as e:
