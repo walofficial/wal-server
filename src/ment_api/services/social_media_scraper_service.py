@@ -7,10 +7,19 @@ from typing import List, Optional
 
 from bson import ObjectId
 from google.genai.types import GenerateContentConfig, ThinkingConfig
+from google.genai.types import Part
 from langfuse import observe
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 import aiohttp
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    retry_if_result,
+    stop_after_attempt,
+    wait_random_exponential,
+)
 
 from ment_api.configurations.config import settings
 from ment_api.events.social_media_scrape_event import SocialMediaScrapeEvent
@@ -122,6 +131,9 @@ def compress_image(image_data: bytes, max_size: int = MAX_FILE_SIZE) -> bytes:
 class SocialMediaParsedContent(BaseModel):
     """Structured representation of parsed social media content"""
 
+    is_broken_screenshot: bool = Field(
+        False, description="Whether the screenshot is broken"
+    )
     is_private_post: bool = Field(False, description="Whether the post is private")
     text_content: str = Field(
         description="The main text content of the post, should be just text, not html or something else. you can also remove emojis."
@@ -144,7 +156,7 @@ class SocialMediaParsedContent(BaseModel):
 
 @observe(as_type="generation")
 async def parse_social_media_content(
-    markdown_content: str, platform: str, url: str
+    markdown_content: str, platform: str, url: str, screenshot_data: bytes
 ) -> SocialMediaParsedContent:
     """
     Use Gemini to parse scraped social media content into a structured format.
@@ -154,7 +166,7 @@ async def parse_social_media_content(
         markdown_content: The raw scraped content in markdown format
         platform: The social media platform
         url: The original URL
-
+        screenshot_data: The screenshot of the facebook or other social network page
     Returns:
         Structured representation of the social media content
     """
@@ -179,6 +191,7 @@ async def parse_social_media_content(
         - Image URLs attached to the post
         - Whether the post is private, might be from private group or page. Assume that it is not private if you see the post content even though there is some overlays around it.
         - Author profile image URL (if present)
+        - If screenshot is valid and not broken. broken means that it has nothing on it like some logos and stuff and unrelated text for example.
         Return the information in a clean, structured JSON format without any HTML tags or markdown formatting.
         Focus on extracting factual information that would be useful for fact-checking.
         """
@@ -216,7 +229,13 @@ async def parse_social_media_content(
                     thinking_budget=2000,
                 ),
             ),
-            contents=[prompt],
+            contents=[
+                prompt,
+                Part.from_bytes(
+                    data=screenshot_data,
+                    mime_type="image/jpeg",
+                ),
+            ],
         )
 
         langfuse.update_current_generation(
@@ -243,14 +262,7 @@ async def parse_social_media_content(
     except Exception as e:
         logger.error(f"Error parsing {platform} content with Gemini: {e}")
 
-        # Fallback to basic parsing
-        return SocialMediaParsedContent(
-            is_private_post=False,
-            text_content=markdown_content[:1000],  # First 1000 chars
-            platform=platform,
-            has_images=False,
-            image_count=0,
-        )
+        raise e
 
 
 @observe()
@@ -280,58 +292,81 @@ async def scrape_social_media(
             },
         )
 
-        # Scrape the content and capture screenshot in a single API call
-        scrape_start_time = time.time()
+        def _should_retry_broken_screenshot(result: tuple) -> bool:
+            try:
+                parsed, shot, _ = result
+                is_broken = getattr(parsed, "is_broken_screenshot", False)
+                no_image = not bool(shot)
+                return bool(is_broken or no_image)
+            except Exception as pred_err:
+                logger.warning(f"Retry predicate error: {pred_err}")
+                return False
 
-        with langfuse.start_as_current_span(
-            name="scrape_with_screenshot"
-        ) as scrape_span:
-            scrape_span.update(
-                input={
-                    "url": social_url,
-                    "platform": platform,
-                    "full_page": True,
-                    "wait_until": "networkidle2",
-                },
-                user_id=user_id,
-            )
+        @retry(
+            retry=retry_if_exception_type()
+            | retry_if_result(_should_retry_broken_screenshot),
+            wait=wait_random_exponential(multiplier=1, max=3),
+            stop=stop_after_attempt(3),
+            before_sleep=before_sleep_log(logger, logging.WARNING),
+        )
+        async def _scrape_and_parse_once() -> (
+            tuple[SocialMediaParsedContent, Optional[bytes], str]
+        ):
+            scrape_start_time = time.time()
 
-            async with get_scrape_do_client() as client:
-                scrape_result = await client.scrape_with_screenshot(
-                    social_url, full_page=True, wait_until="networkidle2"
+            with langfuse.start_as_current_span(
+                name="scrape_with_screenshot"
+            ) as scrape_span:
+                scrape_span.update(
+                    input={
+                        "url": social_url,
+                        "platform": platform,
+                        "full_page": True,
+                        "wait_until": "networkidle2",
+                    },
+                    user_id=user_id,
                 )
 
-            scrape_duration = (time.time() - scrape_start_time) * 1000
+                async with get_scrape_do_client() as client:
+                    scrape_result = await client.scrape_with_screenshot(
+                        social_url, full_page=True, wait_until="networkidle2"
+                    )
 
-            if not scrape_result or not scrape_result.get("content"):
+                scrape_duration = (time.time() - scrape_start_time) * 1000
+
+                if not scrape_result or not scrape_result.get("content"):
+                    scrape_span.update(
+                        output={"success": False, "error": "No content returned"},
+                        metadata={"duration_ms": scrape_duration},
+                    )
+                    raise Exception("Failed to scrape social media content")
+
                 scrape_span.update(
-                    output={"success": False, "error": "No content returned"},
+                    output={
+                        "success": True,
+                        "has_content": bool(scrape_result.get("content")),
+                        "content_length": len(scrape_result.get("content", "")),
+                        "has_screenshot": bool(scrape_result.get("screenshot_data")),
+                        "screenshot_size_bytes": len(
+                            scrape_result.get("screenshot_data", b"")
+                        ),
+                    },
                     metadata={"duration_ms": scrape_duration},
                 )
-                raise Exception("Failed to scrape social media content")
 
-            scrape_span.update(
-                output={
-                    "success": True,
-                    "has_content": bool(scrape_result.get("content")),
-                    "content_length": len(scrape_result.get("content", "")),
-                    "has_screenshot": bool(scrape_result.get("screenshot_data")),
-                    "screenshot_size_bytes": len(
-                        scrape_result.get("screenshot_data", b"")
-                    ),
-                },
-                metadata={"duration_ms": scrape_duration},
+            markdown = scrape_result["content"]
+            shot_bytes = scrape_result.get("screenshot_data")
+            parsed = await parse_social_media_content(
+                markdown, platform, social_url, shot_bytes
             )
+            return parsed, shot_bytes, markdown
 
-        # Extract content and screenshot from the result
-        markdown_content = scrape_result["content"]
-        screenshot_data = scrape_result.get("screenshot_data")
-
-        # Parse the markdown content using Gemini
-
-        parsed_content = await parse_social_media_content(
-            markdown_content, platform, social_url
+        parsed_content, screenshot_data, markdown_content = (
+            await _scrape_and_parse_once()
         )
+
+        if parsed_content.is_broken_screenshot:
+            raise Exception("Broken screenshot detected after all retry attempts")
 
         # Save the screenshot to Google Cloud Storage
         full_page_screenshot = None
@@ -491,7 +526,7 @@ async def scrape_social_media(
                     raise Exception("No content in re-scrape result")
                 markdown_content = scrape_result["content"]
                 parsed_content = await parse_social_media_content(
-                    markdown_content, platform, social_url
+                    markdown_content, platform, social_url, full_page_screenshot.url
                 )
             except Exception as re_err:
                 logger.warning(f"Re-scrape attempt failed: {re_err}")
