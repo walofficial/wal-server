@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from google.cloud import storage
+from ment_api.services.google_storage_service import client
 
 logger = logging.getLogger(__name__)
 
@@ -9,9 +9,8 @@ async def upload_file_to_gcs(
     source_file_name: str, destination_blob_name: str, bucket_name: str
 ) -> str:
     """Uploads a file to the GCS bucket."""
-    storage_client = storage.Client()
     try:
-        bucket = storage_client.bucket(bucket_name)
+        bucket = client.bucket(bucket_name)
         blob = bucket.blob(destination_blob_name)
 
         # Run upload in a separate thread
