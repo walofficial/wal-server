@@ -221,6 +221,7 @@ class ScrapeDoClient:
             ("returnJSON", "true"),
             ("output", "markdown"),
             ("device", "tablet"),
+            ("blockResources", "false"),
         ]
 
         # Add fullScreenshot parameter if full_page is True
