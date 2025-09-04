@@ -101,7 +101,7 @@ async def _query_recent_articles(limit: int = 20):
 async def _generate_post(articles: List[dict]) -> MediaGeneratedPostResponse | None:
     user_prompt = _build_prompt(articles)
     response = await gemini_client.aio.models.generate_content(
-        model="gemini-2.5-flash-lite",
+        model="gemini-2.5-flash",
         config={
             "system_instruction": SYSTEM_PROMPT,
             "response_mime_type": "application/json",
@@ -145,7 +145,7 @@ async def process_media_post_generator_callback(message: ReceivedMessage):
             )
             if uploaded:
                 image_gallery = [uploaded]
-
+        print(selected)
         # Build sources from the matched external article
         matched_article = next(
             (a for a in articles if a.get("external_id") == selected.external_id),
