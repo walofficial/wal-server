@@ -145,7 +145,6 @@ async def process_media_post_generator_callback(message: ReceivedMessage):
             )
             if uploaded:
                 image_gallery = [uploaded]
-        print(selected)
         # Build sources from the matched external article
         matched_article = next(
             (a for a in articles if a.get("external_id") == selected.external_id),
