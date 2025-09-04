@@ -17,7 +17,9 @@ from ment_api.models.fact_checking_models import (
 
 from groq import Groq
 
-client = Groq(default_headers={"Groq-Model-Version": "latest"})
+client = Groq(
+    default_headers={"Groq-Model-Version": "latest"}, api_key=settings.groq_key
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,23 +45,63 @@ def get_jina_response_format():
     schema = JinaFactCheckResponse.model_json_schema()
 
     # Remove $defs and inline the FactCheckingReference definition
-    if "$defs" in schema:
-        # Get the FactCheckingReference definition
-        fact_checking_ref_def = schema["$defs"].get("FactCheckingReference", {})
-
-        # Update the references property to use the inline definition
-        if "properties" in schema and "references" in schema["properties"]:
-            schema["properties"]["references"]["items"] = fact_checking_ref_def
-
-        # Remove $defs
-        del schema["$defs"]
-
-    return {
-        "type": "object",
-        "title": schema.get("title", "JinaFactCheckResponse"),
-        "properties": schema.get("properties", {}),
-        "required": schema.get("required", []),
-    }
+    return """{
+    "type": "object",
+    "properties": {
+      "factuality": {
+        "type": "number",
+        "description": "Output a numerical score between 0.0 and 1.0 representing the factuality of the news article. This score will be shown to users to indicate how factual the article is. Adhere to the following interpretation: 0.9-1.0 signifies highly factual (well-supported by multiple reliable sources); 0.7-0.9 signifies mostly factual (with minor uncertainties); 0.4-0.7 signifies partially factual (with significant uncertainties); and 0.0-0.4 signifies mostly false or unverifiable."
+      },
+      "reason": {
+        "type": "string",
+        "description": "Structured Georgian fact-check explanation formatted with specific sections. Use this exact format with proper line breaks:\n\n## სიმართლე\n- [bullet point for true claim]\n- [bullet point for true claim]\n\n[One paragraph explaining evidence why these claims are true]\n\n## ტყუილი\n- [bullet point for false claim]\n- [bullet point for false claim]\n\n[One paragraph explaining evidence why these claims are false]\n\n## გადაუმოწმებელი\n- [bullet point for unverifiable claim]\n\n[One paragraph explaining why these cannot be verified]\n\nOnly include sections that have content. Use '-' for bullet points. Keep bullet points short and digestible. Write evidence paragraphs in clear Georgian."
+      },
+      "score_justification": {
+        "type": "string",
+        "description": "Comprehensive English analysis providing detailed reasoning behind the factuality score. This should be even more thorough than the Georgian reason field, explaining: the methodology used for evaluation, specific evidence weighting, source credibility assessment, logical reasoning process, and complete justification for the numerical score assigned. Be extremely detailed and analytical."
+      },
+      "reason_summary": {
+        "type": "string",
+        "description": "A concise fact-check summary in Georgian language, formatted as raw markdown (no code blocks). This summary appears directly under articles alongside the factuality score and must be optimized for users with short attention spans. Requirements: Maximum 2-3 short sentences total (not paragraphs); Lead with the most important finding first; Use simple, direct language that an average reader can scan quickly; Structure: Present findings in order of impact using this priority: a) If false information is present, start with it; b) Then include unverifiable claims if applicable; c) End with any validated claims if present."
+      },
+      "references": {
+        "type": "array",
+        "description": "List of reference objects supporting the fact check, where each object has a url, source_title, key_quote, and is_supportive",
+        "items": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "URL of the reference source"
+            },
+            "source_title": {
+              "type": "string",
+              "description": "Title of the reference source"
+            },
+            "key_quote": {
+              "type": "string",
+              "description": "Key quote from the source supporting the fact check"
+            },
+            "is_supportive": {
+              "type": "boolean",
+              "description": "Whether the reference supports or refutes the statement"
+            }
+          },
+          "required": [
+            "url",
+            "key_quote",
+            "is_supportive"
+          ]
+        }
+      }
+    },
+    "required": [
+      "factuality",
+      "reason",
+      "score_justification",
+      "reason_summary"
+    ]
+  }"""
 
 
 # Create fact checking prompt
@@ -168,7 +210,10 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
                     "content": " You are an expert fact-checker tasked with thoroughly analyzing the following post details. Follow the step-by-step process below to ensure accuracy and completeness. \n",
                 },
                 {"role": "user", "content": fact_checking_prompt},
-                {"role": "user", "content": get_jina_response_format()},
+                {
+                    "role": "user",
+                    "content": f"Return JSON like in this schema format: {get_jina_response_format()}",
+                },
             ],
             temperature=1,
             max_completion_tokens=4201,
@@ -177,7 +222,8 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
             response_format={"type": "json_object"},
             stop=None,
         )
-        response_text = json.loads(completion.choices[0].message)
+        print(completion.choices[0].message.content)
+        response_text = json.loads(completion.choices[0].message.content)
 
         try:
             jina_response_parsed: JinaFactCheckResponse = (
