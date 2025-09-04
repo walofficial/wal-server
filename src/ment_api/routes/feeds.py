@@ -772,16 +772,15 @@ async def generate_social_media_content(
         content_items = await mongo.verifications.aggregate(content_pipeline)
         content_items = list(content_items)
 
-        if not content_items:
-            logger.info("No content items found for social media generation")
-            return {"error": "No content items found for social media generation"}
-
         # filter content items so that it only show references length >= 3
         content_items = [
             item
             for item in content_items
             if len(item.get("fact_check_data", {}).get("references", [])) >= 3
         ]
+        if not content_items:
+            logger.info("No content items found for social media generation")
+            return {"error": "No content items found for social media generation"}
 
         # Select a random item from the results
         selected_item = random.choice(content_items)
