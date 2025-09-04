@@ -641,8 +641,10 @@ async def get_enhanced_screenshot(verification_id: str) -> None:
         # Get verification data for additional context
 
         # Build screenshot URL
+        is_dev = settings.env == "dev"
+        url = "wal.ge" if not is_dev else "staging.wal.ge"
         screenshot_url = (
-            f"https://wal.ge/status/{verification_id}/facebook-mock?static=true"
+            f"https://{url}/status/{verification_id}/facebook-mock?static=true"
         )
 
         # Capture screenshot using ScrapeDoClient
