@@ -168,10 +168,8 @@ WRITING STYLE:
     )
 
     references: List[FactCheckingReference] = Field(
-        default=[],
         description="""REFERENCE REQUIREMENTS:
-
-Provide comprehensive reference objects supporting the fact check analysis.
+References found in the markdown reference
 
 EACH REFERENCE MUST INCLUDE:
 • url: Direct URL to the source

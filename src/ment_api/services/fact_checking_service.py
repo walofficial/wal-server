@@ -172,10 +172,8 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
             },
             "response_format": get_jina_response_format(),
         }
-
         # Make a single request to Jina DeepSearch using the module-level client
         jina_response = await jina_client.chat.completions.create(**jina_request_params)
-
         response_text = json.loads(jina_response.choices[0].message.content)
 
         try:
