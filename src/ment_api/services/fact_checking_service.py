@@ -15,6 +15,10 @@ from ment_api.models.fact_checking_models import (
     JinaFactCheckResponse,
 )
 
+from groq import Groq
+
+client = Groq(default_headers={"Groq-Model-Version": "latest"})
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,7 +67,6 @@ def create_fact_checking_prompt(details: str) -> str:
     current_date = datetime.now().strftime("%Y-%m-%d")
     return f"""
     The current date is: {current_date}
-    You are an expert fact-checker tasked with thoroughly analyzing the following post details. Follow the step-by-step process below to ensure accuracy and completeness. 
 
     <details>
 {details}
@@ -93,7 +96,6 @@ Avoid bullet point repetition: Expand with NEW information that supports/contrad
 Progressive information: Each sentence should add new value, not repeat previous points
 Multiple source corroboration: Show how different sources align or conflict
 Logical flow: Evidence should build from strongest to supporting details
-Georgian clarity: Write for average readers but include precise factual details
 CRITICAL REQUIREMENTS:
 
 If a section has NO bullet points, DO NOT include that section AT ALL
@@ -107,16 +109,14 @@ Source credibility analysis
 Logical reasoning process step-by-step
 Complete justification for the numerical score assigned
 Be extremely detailed and analytical
-Georgian User Summary
-Concise fact-check summary in Georgian, formatted as raw markdown. Optimized for users with short attention spans:
+Concise fact-check summary, formatted as raw markdown. Optimized for users with short attention spans:
 
 Requirements:
 
 Maximum 2-3 short sentences total (not paragraphs)
 Lead with most important finding first
 Use simple, direct language for quick scanning
-Priority structure: a) False information: "მტკიცება მცდარია:" or "ინფორმაცია არასწორია:" + brief reason (max 15 words) b) Verified true information: "თუმცა, სწორია, რომ..." or "ინფორმაცია სწორია:" + reason (max 15 words)
-c) Unverifiable claims: "ვერ გადამოწმდა..." or "გადაუმოწმებელია..." + specific claim (max 10 words)
+
 Skip categories with no significant findings
 Use active voice and specific terms
 Write for 3-second comprehension
@@ -160,21 +160,24 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
         budget_tokens = getattr(request, "budget_tokens") or settings.jina_token_limit
         logger.info(f"Budget tokens: {budget_tokens}")
 
-        jina_request_params = {
-            "model": "jina-deepsearch-v1",
-            "messages": [
+        completion = client.chat.completions.create(
+            model="groq/compound",
+            messages=[
+                {
+                    "role": "system",
+                    "content": " You are an expert fact-checker tasked with thoroughly analyzing the following post details. Follow the step-by-step process below to ensure accuracy and completeness. \n",
+                },
                 {"role": "user", "content": fact_checking_prompt},
+                {"role": "user", "content": get_jina_response_format()},
             ],
-            "timeout": httpx.Timeout(60 * 10.0),
-            "extra_body": {
-                "budget_tokens": budget_tokens,
-                "verification_id": str(request.verification_id),
-            },
-            "response_format": get_jina_response_format(),
-        }
-        # Make a single request to Jina DeepSearch using the module-level client
-        jina_response = await jina_client.chat.completions.create(**jina_request_params)
-        response_text = json.loads(jina_response.choices[0].message.content)
+            temperature=1,
+            max_completion_tokens=4201,
+            top_p=1,
+            stream=False,
+            response_format={"type": "json_object"},
+            stop=None,
+        )
+        response_text = json.loads(completion.choices[0].message)
 
         try:
             jina_response_parsed: JinaFactCheckResponse = (
@@ -187,19 +190,11 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
                 score_justification=jina_response_parsed.score_justification,
                 reason_summary=jina_response_parsed.reason_summary,
                 references=jina_response_parsed.references,
-                visited_urls=(
-                    jina_response.model_extra.get("visitedURLs", [])
-                    if hasattr(jina_response, "model_extra")
-                    else []
-                ),
-                read_urls=(
-                    jina_response.model_extra.get("readURLs", [])
-                    if hasattr(jina_response, "model_extra")
-                    else []
-                ),
+                visited_urls=([]),
+                read_urls=([]),
             )
         except ValidationError as e:
-            error_msg = f"Failed to deserialize Jina response: {str(e)}. Original content: {jina_response.choices[0].message.content}"
+            error_msg = f"Failed to deserialize Jina response: {str(e)}. Original content: {completion.choices[0].message.content}"
 
             logger.error(error_msg, exc_info=True)
             return None
