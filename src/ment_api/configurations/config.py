@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     scrapable_civil_news_endpoint: str
     google_maps_api_key: str
     k_revision: str = "1.0.0"
+    wal_url: str
 
     langfuse_host: str
     langfuse_public_key: str

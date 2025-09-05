@@ -5,13 +5,12 @@ import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from bson import ObjectId
-from google.genai.types import GenerateContentConfig, ThinkingConfig
-from google.genai.types import Part
-from langfuse import observe
-from bs4 import BeautifulSoup
-from pydantic import BaseModel, Field
 import aiohttp
+from bs4 import BeautifulSoup
+from bson import ObjectId
+from google.genai.types import GenerateContentConfig, Part, ThinkingConfig
+from langfuse import observe
+from pydantic import BaseModel, Field
 from tenacity import (
     before_sleep_log,
     retry,
@@ -38,7 +37,6 @@ from ment_api.services.external_clients.scrape_do_client import get_scrape_do_cl
 from ment_api.services.news_service import publish_check_fact
 from ment_api.services.notification_service import send_notification
 from ment_api.services.pub_sub_service import publish_message
-
 
 logger = logging.getLogger(__name__)
 
@@ -309,9 +307,9 @@ async def scrape_social_media(
             stop=stop_after_attempt(3),
             before_sleep=before_sleep_log(logger, logging.WARNING),
         )
-        async def _scrape_and_parse_once() -> (
-            tuple[SocialMediaParsedContent, Optional[bytes], str]
-        ):
+        async def _scrape_and_parse_once() -> tuple[
+            SocialMediaParsedContent, Optional[bytes], str
+        ]:
             scrape_start_time = time.time()
 
             with langfuse.start_as_current_span(
@@ -361,9 +359,11 @@ async def scrape_social_media(
             )
             return parsed, shot_bytes, markdown
 
-        parsed_content, screenshot_data, markdown_content = (
-            await _scrape_and_parse_once()
-        )
+        (
+            parsed_content,
+            screenshot_data,
+            markdown_content,
+        ) = await _scrape_and_parse_once()
 
         if parsed_content.is_broken_screenshot:
             raise Exception("Broken screenshot detected after all retry attempts")
@@ -641,11 +641,7 @@ async def get_enhanced_screenshot(verification_id: str) -> None:
         # Get verification data for additional context
 
         # Build screenshot URL
-        is_dev = settings.env == "dev"
-        url = "wal.ge" if not is_dev else "staging.wal.ge"
-        screenshot_url = (
-            f"https://{url}/status/{verification_id}/facebook-mock?static=true"
-        )
+        screenshot_url = f"https://{settings.wal_url}/status/{verification_id}/facebook-mock?static=true"
 
         # Capture screenshot using ScrapeDoClient
         result = await client.scrape_with_screenshot(
