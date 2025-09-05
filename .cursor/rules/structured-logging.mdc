@@ -1,0 +1,71 @@
+---
+alwaysApply: true
+description: "Core structured logging requirements using Google Cloud Logging"
+---
+
+# Structured Logging Requirements
+
+## Mandatory Pattern
+
+All logging MUST use this exact pattern:
+
+```python
+import logging
+
+logging.info(
+    "Human readable message",
+    extra={
+        "json_fields": {"key": "value", "operation": "operation_name"},
+        "labels": {"component": "service_name"}
+    }
+)
+```
+
+## Core Rules
+
+1. **Always use `json_fields`** - Never log plain strings without structured data
+2. **Include `operation` field** - Every log must identify what operation occurred
+3. **Add `labels` for filtering** - Minimum: component name
+4. **Reference [logging_config.py](mdc:src/ment_api/configurations/logging_config.py)** for setup
+
+## Google Cloud Logging Integration
+
+These fields are automatically detected:
+
+- `labels`, `trace`, `span_id`, `http_request`, `source_location`, `json_fields`
+
+Manual override via `extra` argument:
+
+```python
+logging.info("Request processed", extra={
+    "json_fields": {"user_id": "123", "operation": "auth"},
+    "labels": {"service": "ment_api"},
+    "http_request": {"requestUrl": "/login", "requestMethod": "POST"},
+    "trace": request_trace_id
+})
+```
+
+## Quick Examples
+
+**Error logging:**
+
+```python
+logging.error("Database failed", extra={
+    "json_fields": {"error_code": "DB_001", "operation": "db_connect"},
+    "labels": {"component": "database", "severity": "high"}
+})
+```
+
+**Business event:**
+
+```python
+logging.info("Fact verified", extra={
+    "json_fields": {"fact_id": "f123", "confidence": 0.95, "operation": "fact_check"},
+    "labels": {"service": "fact_checker"}
+})
+```
+
+## Reference Other Rules
+
+- Field naming standards: See [logging-fields-standards.mdc](mdc:.cursor/rules/logging-fields-standards.mdc)
+- Implementation patterns: See [logging-patterns.mdc](mdc:.cursor/rules/logging-patterns.mdc)

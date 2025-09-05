@@ -4,10 +4,10 @@ from datetime import datetime
 from typing import Optional
 
 import httpx
+from langfuse import observe
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
-from langfuse import observe
 from ment_api.configurations.config import settings
 from ment_api.models.fact_checking_models import (
     FactCheckingResult,
@@ -19,16 +19,49 @@ logger = logging.getLogger(__name__)
 
 
 # Initialize Jina AI client once at module level following OpenAI best practices
-jina_client = AsyncOpenAI(
-    api_key=settings.jina_api_key,
-    base_url=settings.jina_base_url,
-    timeout=httpx.Timeout(
-        connect=10.0,  # 10 seconds to establish connection
-        read=720.0,  # 12 minutes to read response (10 min + 2 min buffer)
-        write=30.0,  # 30 seconds to send request
-        pool=10.0,  # 10 seconds to get connection from pool
-    ),
-)
+try:
+    jina_client = AsyncOpenAI(
+        api_key=settings.jina_api_key,
+        base_url=settings.jina_base_url,
+        timeout=httpx.Timeout(
+            connect=10.0,  # 10 seconds to establish connection
+            read=720.0,  # 12 minutes to read response (10 min + 2 min buffer)
+            write=30.0,  # 30 seconds to send request
+            pool=10.0,  # 10 seconds to get connection from pool
+        ),
+    )
+
+    logger.info(
+        "Jina AI client initialized successfully",
+        extra={
+            "json_fields": {
+                "base_url": settings.jina_base_url,
+                "connect_timeout": 10.0,
+                "read_timeout": 720.0,
+                "write_timeout": 30.0,
+                "pool_timeout": 10.0,
+                "base_operation": "fact_check",
+                "operation": "jina_client_initialized",
+            },
+            "labels": {"component": "jina_fact_checker", "phase": "init"},
+        },
+    )
+except Exception as e:
+    logger.error(
+        "Failed to initialize Jina AI client",
+        extra={
+            "json_fields": {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "base_url": settings.jina_base_url,
+                "base_operation": "fact_check",
+                "operation": "jina_client_init_error",
+            },
+            "labels": {"component": "jina_fact_checker", "severity": "critical"},
+        },
+        exc_info=True,
+    )
+    raise  # Re-raise to prevent module from loading with broken client
 
 
 def get_jina_response_format():
@@ -36,10 +69,22 @@ def get_jina_response_format():
     Generate response format from JinaFactCheckResponse pydantic model
     to ensure single source of truth without $defs
     """
+    logger.debug(
+        "Generating Jina response format schema",
+        extra={
+            "json_fields": {
+                "base_operation": "fact_check",
+                "operation": "jina_schema_generation_start",
+            },
+            "labels": {"component": "jina_fact_checker", "phase": "schema"},
+        },
+    )
+
     schema = JinaFactCheckResponse.model_json_schema()
 
     # Remove $defs and inline the FactCheckingReference definition
-    if "$defs" in schema:
+    has_defs = "$defs" in schema
+    if has_defs:
         # Get the FactCheckingReference definition
         fact_checking_ref_def = schema["$defs"].get("FactCheckingReference", {})
 
@@ -50,18 +95,47 @@ def get_jina_response_format():
         # Remove $defs
         del schema["$defs"]
 
-    return {
+    response_format = {
         "type": "object",
         "title": schema.get("title", "JinaFactCheckResponse"),
         "properties": schema.get("properties", {}),
         "required": schema.get("required", []),
     }
 
+    logger.debug(
+        "Jina response format schema generated",
+        extra={
+            "json_fields": {
+                "had_defs": has_defs,
+                "properties_count": len(response_format["properties"]),
+                "required_fields_count": len(response_format["required"]),
+                "base_operation": "fact_check",
+                "operation": "jina_schema_generation_complete",
+            },
+            "labels": {"component": "jina_fact_checker", "phase": "schema"},
+        },
+    )
+
+    return response_format
+
 
 # Create fact checking prompt
 def create_fact_checking_prompt(details: str) -> str:
     current_date = datetime.now().strftime("%Y-%m-%d")
-    return f"""
+
+    logger.debug(
+        "Creating fact checking prompt",
+        extra={
+            "json_fields": {
+                "details_length": len(details),
+                "current_date": current_date,
+                "base_operation": "fact_check",
+                "operation": "jina_prompt_creation",
+            },
+            "labels": {"component": "jina_fact_checker", "phase": "prompt"},
+        },
+    )
+    prompt = f"""
     The current date is: {current_date}
     You are an expert fact-checker tasked with thoroughly analyzing the following post details. Follow the step-by-step process below to ensure accuracy and completeness. 
 
@@ -138,6 +212,21 @@ Use high levels of speculation or prediction when appropriate, but clearly flag 
 Be highly organized in your response structure
 """
 
+    logger.debug(
+        "Fact checking prompt created",
+        extra={
+            "json_fields": {
+                "prompt_length": len(prompt),
+                "details_length": len(details),
+                "base_operation": "fact_check",
+                "operation": "jina_prompt_created",
+            },
+            "labels": {"component": "jina_fact_checker", "phase": "prompt"},
+        },
+    )
+
+    return prompt
+
 
 @observe(as_type="generation")
 async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
@@ -151,14 +240,38 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
         FactCheckingResult with the verification data or None if the check failed
     """
     try:
-        logger.info("Fact checking with Jina DeepSearch")
+        logger.info(
+            "Starting Jina DeepSearch fact check",
+            extra={
+                "json_fields": {
+                    "verification_id": str(request.verification_id),
+                    "statement_length": len(request.details),
+                    "base_operation": "fact_check",
+                    "operation": "jina_fact_check_start",
+                },
+                "labels": {"component": "jina_fact_checker", "phase": "start"},
+            },
+        )
 
         # Create prompts
         fact_checking_prompt = create_fact_checking_prompt(request.details)
 
         # Prepare request parameters
         budget_tokens = getattr(request, "budget_tokens") or settings.jina_token_limit
-        logger.info(f"Budget tokens: {budget_tokens}")
+
+        logger.info(
+            "Jina request parameters prepared",
+            extra={
+                "json_fields": {
+                    "verification_id": str(request.verification_id),
+                    "budget_tokens": budget_tokens,
+                    "prompt_length": len(fact_checking_prompt),
+                    "base_operation": "fact_check",
+                    "operation": "jina_request_prepared",
+                },
+                "labels": {"component": "jina_fact_checker", "phase": "prepare"},
+            },
+        )
 
         jina_request_params = {
             "model": "jina-deepsearch-v1",
@@ -173,15 +286,59 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
             "response_format": get_jina_response_format(),
         }
         # Make a single request to Jina DeepSearch using the module-level client
+        logger.debug(
+            "Sending request to Jina DeepSearch API",
+            extra={
+                "json_fields": {
+                    "verification_id": str(request.verification_id),
+                    "model": "jina-deepsearch-v1",
+                    "timeout_seconds": 600,
+                    "base_operation": "fact_check",
+                    "operation": "jina_api_request_sent",
+                },
+                "labels": {"component": "jina_fact_checker", "phase": "api_call"},
+            },
+        )
+
         jina_response = await jina_client.chat.completions.create(**jina_request_params)
         response_text = json.loads(jina_response.choices[0].message.content)
+
+        logger.info(
+            "Jina DeepSearch API response received",
+            extra={
+                "json_fields": {
+                    "verification_id": str(request.verification_id),
+                    "response_length": len(jina_response.choices[0].message.content),
+                    "has_response": bool(response_text),
+                    "base_operation": "fact_check",
+                    "operation": "jina_api_response_received",
+                },
+                "labels": {"component": "jina_fact_checker", "phase": "api_call"},
+            },
+        )
 
         try:
             jina_response_parsed: JinaFactCheckResponse = (
                 JinaFactCheckResponse.model_validate(response_text)
             )
 
-            return FactCheckingResult(
+            logger.info(
+                "Jina response parsed successfully",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(request.verification_id),
+                        "factuality_score": jina_response_parsed.factuality,
+                        "references_count": len(jina_response_parsed.references),
+                        "has_reason": bool(jina_response_parsed.reason),
+                        "has_summary": bool(jina_response_parsed.reason_summary),
+                        "base_operation": "fact_check",
+                        "operation": "jina_response_parsed",
+                    },
+                    "labels": {"component": "jina_fact_checker", "phase": "parse"},
+                },
+            )
+
+            fact_check_result = FactCheckingResult(
                 factuality=jina_response_parsed.factuality,
                 reason=jina_response_parsed.reason,
                 score_justification=jina_response_parsed.score_justification,
@@ -198,15 +355,75 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
                     else []
                 ),
             )
-        except ValidationError as e:
-            error_msg = f"Failed to deserialize Jina response: {str(e)}. Original content: {jina_response.choices[0].message.content}"
 
-            logger.error(error_msg, exc_info=True)
+            logger.info(
+                "Jina fact check completed successfully",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(request.verification_id),
+                        "factuality_score": fact_check_result.factuality,
+                        "references_count": len(fact_check_result.references),
+                        "visited_urls_count": len(fact_check_result.visited_urls),
+                        "read_urls_count": len(fact_check_result.read_urls),
+                        "base_operation": "fact_check",
+                        "operation": "jina_fact_check_success",
+                    },
+                    "labels": {"component": "jina_fact_checker", "phase": "complete"},
+                },
+            )
+
+            return fact_check_result
+        except ValidationError as e:
+            logger.error(
+                "Failed to parse Jina response",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(request.verification_id),
+                        "error": str(e),
+                        "error_type": "ValidationError",
+                        "response_content_length": len(
+                            jina_response.choices[0].message.content
+                        ),
+                        "base_operation": "fact_check",
+                        "operation": "jina_response_parse_error",
+                    },
+                    "labels": {"component": "jina_fact_checker", "severity": "high"},
+                },
+                exc_info=True,
+            )
+
+            logger.debug(
+                "Jina response content that failed parsing",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(request.verification_id),
+                        "response_content": jina_response.choices[0].message.content[
+                            :500
+                        ],  # First 500 chars for debugging
+                        "base_operation": "fact_check",
+                        "operation": "jina_response_parse_error_debug",
+                    },
+                    "labels": {"component": "jina_fact_checker"},
+                },
+            )
             return None
 
     except Exception as e:
         logger.error(
-            f"Error in fact checking, probably error in Jina service: {e}",
+            "Jina fact check failed with unexpected error",
+            extra={
+                "json_fields": {
+                    "verification_id": str(request.verification_id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "budget_tokens": budget_tokens
+                    if "budget_tokens" in locals()
+                    else None,
+                    "base_operation": "fact_check",
+                    "operation": "jina_fact_check_error",
+                },
+                "labels": {"component": "jina_fact_checker", "severity": "high"},
+            },
             exc_info=True,
         )
         return None
