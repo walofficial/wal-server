@@ -98,15 +98,15 @@ def get_jina_response_format():
       },
       "reason": {
         "type": "string",
-        "description": "Structured Georgian fact-check explanation formatted with specific sections. Use this exact format with proper line breaks:\n\n## სიმართლე\n- [bullet point for true claim]\n- [bullet point for true claim]\n\n[One paragraph explaining evidence why these claims are true]\n\n## ტყუილი\n- [bullet point for false claim]\n- [bullet point for false claim]\n\n[One paragraph explaining evidence why these claims are false]\n\n## გადაუმოწმებელი\n- [bullet point for unverifiable claim]\n\n[One paragraph explaining why these cannot be verified]\n\nOnly include sections that have content. Use '-' for bullet points. Keep bullet points short and digestible. Write evidence paragraphs in clear Georgian."
+        "description": "Structured fact-check explanation formatted with specific sections. Use this exact format with proper line breaks:\n\n## სიმართლე\n- [bullet point for true claim]\n- [bullet point for true claim]\n\n[One paragraph explaining evidence why these claims are true]\n\n## ტყუილი\n- [bullet point for false claim]\n- [bullet point for false claim]\n\n[One paragraph explaining evidence why these claims are false]\n\n## გადაუმოწმებელი\n- [bullet point for unverifiable claim]\n\n[One paragraph explaining why these cannot be verified]\n\nOnly include sections that have content. Use '-' for bullet points. Keep bullet points short and digestible."
       },
       "score_justification": {
         "type": "string",
-        "description": "Comprehensive English analysis providing detailed reasoning behind the factuality score. This should be even more thorough than the Georgian reason field, explaining: the methodology used for evaluation, specific evidence weighting, source credibility assessment, logical reasoning process, and complete justification for the numerical score assigned. Be extremely detailed and analytical."
+        "description": "Comprehensive English analysis providing detailed reasoning behind the factuality score. This should be even more thorough than the reason field, explaining: the methodology used for evaluation, specific evidence weighting, source credibility assessment, logical reasoning process, and complete justification for the numerical score assigned. Be extremely detailed and analytical."
       },
       "reason_summary": {
         "type": "string",
-        "description": "A concise fact-check summary in Georgian language, formatted as raw markdown (no code blocks). This summary appears directly under articles alongside the factuality score and must be optimized for users with short attention spans. Requirements: Maximum 2-3 short sentences total (not paragraphs); Lead with the most important finding first; Use simple, direct language that an average reader can scan quickly; Structure: Present findings in order of impact using this priority: a) If false information is present, start with it; b) Then include unverifiable claims if applicable; c) End with any validated claims if present."
+        "description": "A concise fact-check summary, formatted as raw markdown (no code blocks). This summary appears directly under articles alongside the factuality score and must be optimized for users with short attention spans. Requirements: Maximum 2-3 short sentences total (not paragraphs); Lead with the most important finding first; Use simple, direct language that an average reader can scan quickly; Structure: Present findings in order of impact using this priority: a) If false information is present, start with it; b) Then include unverifiable claims if applicable; c) End with any validated claims if present."
       },
       "references": {
         "type": "array",
@@ -144,6 +144,7 @@ def get_jina_response_format():
       "reason",
       "score_justification",
       "reason_summary"
+      "references"
     ]
   }"""
 
@@ -181,7 +182,9 @@ def create_fact_checking_prompt(details: str) -> str:
         },
     )
     prompt = f"""
-    The current date is: {current_date}
+    The current date is: {current_date} 
+
+    Before you start the fact checking process, make sure to gather all the real time information you need for the persons, places, events, etc. that are mentioned in the post details. For example someone might have become a president or something today or someone made a statement maybe make sure to gather information from search instead of use training data
 
     <details>
 {details}
@@ -231,11 +234,12 @@ Requirements:
 Maximum 2-3 short sentences total (not paragraphs)
 Lead with most important finding first
 Use simple, direct language for quick scanning
-
 Skip categories with no significant findings
 Use active voice and specific terms
 Write for 3-second comprehension
 Avoid technical jargon or complex sentences
+
+
 References
 Provide references with:
 
@@ -243,6 +247,8 @@ URLs to sources
 Source titles
 Key quotes in original language
 Clear indication of whether each source supports or contradicts the post details
+Make sure to return as many as references as possible
+
 Quality standards:
 
 You are working with a highly experienced analyst - be detailed and thorough
@@ -333,6 +339,11 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
             stream=False,
             response_format={"type": "json_object"},
             stop=None,
+            compound_custom={
+                "tools": {
+                    "enabled_tools": ["web_search", "browser_automation"]
+                }
+            }
         )
         print(completion.choices[0].message.content)
         response_text = json.loads(completion.choices[0].message.content)
@@ -368,6 +379,7 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
                 visited_urls=([]),
                 read_urls=([]),
             )
+            return fact_check_result
         except ValidationError as e:
             error_msg = f"Failed to deserialize Jina response: {str(e)}. Original content: {completion.choices[0].message.content}"
 
