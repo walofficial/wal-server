@@ -214,6 +214,7 @@ Avoid bullet point repetition: Expand with NEW information that supports/contrad
 Progressive information: Each sentence should add new value, not repeat previous points
 Multiple source corroboration: Show how different sources align or conflict
 Logical flow: Evidence should build from strongest to supporting details
+Write for average readers but include precise factual details
 CRITICAL REQUIREMENTS:
 
 If a section has NO bullet points, DO NOT include that section AT ALL
@@ -239,24 +240,24 @@ Use active voice and specific terms
 Write for 3-second comprehension
 Avoid technical jargon or complex sentences
 
-
 References
 Provide references with:
-
 URLs to sources
 Source titles
 Key quotes in original language
 Clear indication of whether each source supports or contradicts the post details
-Make sure to return as many as references as possible
 
 Quality standards:
-
 You are working with a highly experienced analyst - be detailed and thorough
 Accuracy is critical - mistakes erode trust
 Value strong arguments over source authority alone
 Consider new technologies and contrarian ideas, not just conventional wisdom
 Use high levels of speculation or prediction when appropriate, but clearly flag it
 Be highly organized in your response structure
+
+You might need sometimes to search Georgian keywords in query as most of the news are in Georgian language
+
+Try to provide more than 6 references and increase it as you find more information.
 """
 
     logger.debug(
@@ -341,8 +342,11 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
             stop=None,
             compound_custom={
                 "tools": {
-                    "enabled_tools": ["web_search", "browser_automation"]
+                    "enabled_tools": ["web_search", "browser_automation","visit_website"]
                 }
+            },
+            search_settings={
+                "country": "georgia",
             }
         )
         print(completion.choices[0].message.content)
