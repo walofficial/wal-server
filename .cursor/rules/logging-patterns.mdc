@@ -1,0 +1,159 @@
+---
+globs: *.py
+description: "Concrete Python logging implementation patterns"
+---
+
+# Python Logging Implementation Patterns
+
+## Required Imports
+
+```python
+import logging
+from typing import Dict, Any, Optional
+```
+
+## Pattern 1: Service Entry/Exit
+
+Based on [check_fact_service.py](mdc:src/ment_api/services/check_fact_service.py):
+
+```python
+def check_fact_service(fact_data: dict) -> dict:
+    logging.info("Fact check started", extra={
+        "json_fields": {
+            "fact_id": fact_data.get("id"),
+            "operation": "fact_check_start"
+        },
+        "labels": {"component": "fact_checker", "phase": "start"}
+    })
+
+    try:
+        result = process_fact(fact_data)
+        logging.info("Fact check completed", extra={
+            "json_fields": {
+                "fact_id": fact_data.get("id"),
+                "result": result.get("status"),
+                "operation": "fact_check_complete"
+            },
+            "labels": {"component": "fact_checker", "phase": "complete"}
+        })
+        return result
+    except Exception as e:
+        logging.error("Fact check failed", extra={
+            "json_fields": {
+                "fact_id": fact_data.get("id"),
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "operation": "fact_check_error"
+            },
+            "labels": {"component": "fact_checker", "phase": "error"}
+        })
+        raise
+```
+
+## Pattern 2: MongoDB Operations
+
+Use pipelines (per repo rule), not loops:
+
+```python
+async def find_with_pipeline(collection: str, pipeline: list) -> list:
+    logging.info("MongoDB query started", extra={
+        "json_fields": {
+            "collection": collection,
+            "pipeline_stages": len(pipeline),
+            "operation": "mongodb_aggregate"
+        },
+        "labels": {"component": "database", "database": "mongodb"}
+    })
+
+    results = await db[collection].aggregate(pipeline).to_list(None)
+
+    logging.info("MongoDB query completed", extra={
+        "json_fields": {
+            "collection": collection,
+            "results_count": len(results),
+            "operation": "mongodb_aggregate_complete"
+        },
+        "labels": {"component": "database", "database": "mongodb"}
+    })
+    return results
+```
+
+## Pattern 3: HTTP Middleware
+
+For [app.py](mdc:src/ment_api/app.py) middleware:
+
+```python
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+
+    logging.info("Request received", extra={
+        "json_fields": {
+            "method": request.method,
+            "url": str(request.url),
+            "operation": "http_request"
+        },
+        "http_request": {
+            "requestMethod": request.method,
+            "requestUrl": str(request.url)
+        },
+        "labels": {"component": "http_middleware"}
+    })
+
+    response = await call_next(request)
+    duration = round((time.time() - start_time) * 1000, 2)
+
+    logging.info("Request completed", extra={
+        "json_fields": {
+            "method": request.method,
+            "status_code": response.status_code,
+            "response_time_ms": duration,
+            "operation": "http_request_complete"
+        },
+        "labels": {"component": "http_middleware"}
+    })
+    return response
+```
+
+## Helper Functions
+
+Create these in your service files:
+
+```python
+def log_operation(operation: str, **context):
+    """Standard operation logging"""
+    logging.info(f"{operation} started", extra={
+        "json_fields": {**context, "operation": f"{operation}_start"},
+        "labels": {"component": context.get("component", "unknown")}
+    })
+
+def log_error(operation: str, error: Exception, **context):
+    """Standard error logging"""
+    logging.error(f"{operation} failed", extra={
+        "json_fields": {
+            **context,
+            "error": str(error),
+            "error_type": type(error).__name__,
+            "operation": f"{operation}_error"
+        },
+        "labels": {"component": context.get("component", "unknown"), "status": "error"}
+    })
+```
+
+## Anti-Patterns
+
+❌ **Never do this:**
+
+```python
+logging.info("User login successful")  # No structure
+logging.info(f"User {user_id} did {action}")  # String formatting
+```
+
+✅ **Always do this:**
+
+```python
+logging.info("User action completed", extra={
+    "json_fields": {"user_id": user_id, "action": action, "operation": "user_action"},
+    "labels": {"component": "auth"}
+})
+```

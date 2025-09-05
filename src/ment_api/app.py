@@ -1,9 +1,9 @@
 import logging
 
 import jwt
-from pydantic import BaseModel
 import socketio
 from fastapi import FastAPI, Request
+from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
@@ -11,7 +11,6 @@ from starlette.responses import JSONResponse
 from ment_api.configurations.config import settings
 from ment_api.configurations.health_check_config import setup_health_checks
 from ment_api.lifespan import lifespan
-from ment_api.services.country_service import get_country_for_request
 from ment_api.routes import (
     comments,
     feed,
@@ -29,7 +28,9 @@ from ment_api.routes import (
 )
 from ment_api.routes.chat import router as chat_router
 from ment_api.routes.chat import sio
+from ment_api.services.country_service import get_country_for_request
 
+print("Initializing fastapi")
 app = FastAPI(lifespan=lifespan)
 
 # GeoIP2 reader is initialized in country_service
