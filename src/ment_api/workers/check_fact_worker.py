@@ -3,8 +3,8 @@ import time
 from typing import Dict, List
 
 from google.pubsub_v1 import ReceivedMessage
-
 from langfuse import observe
+
 from ment_api.common.custom_object_id import CustomObjectId
 from ment_api.events.news_created_event import NewsCreatedEvent
 from ment_api.persistence import mongo
@@ -65,7 +65,22 @@ async def process_check_fact_callback(message: ReceivedMessage):
             verification_ids_str = [str(v_id) for v_id in verification_ids]
 
             logger.info(
-                f"Starting fact check processing for {len(verification_ids)} verifications (attempt {delivery_attempt}/{MAX_RETRY_ATTEMPTS})"
+                "Fact check message received",
+                extra={
+                    "json_fields": {
+                        "verification_count": len(verification_ids),
+                        "delivery_attempt": delivery_attempt,
+                        "max_attempts": MAX_RETRY_ATTEMPTS,
+                        "message_id": message_id,
+                        "verification_id": verification_ids_str[0]
+                        if verification_ids_str
+                        else None,
+                        "verification_ids": verification_ids_str,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_message_received",
+                    },
+                    "labels": {"component": "fact_check_worker", "phase": "start"},
+                },
             )
 
             # Update trace with parsed event data
@@ -81,8 +96,25 @@ async def process_check_fact_callback(message: ReceivedMessage):
 
             # Check if we've exceeded retry limit
             if delivery_attempt > MAX_RETRY_ATTEMPTS:
-                logger.warning(
-                    f"Max retry attempts exceeded ({delivery_attempt}/{MAX_RETRY_ATTEMPTS}) - marking {len(verification_ids)} verifications as FAILED"
+                logger.error(
+                    "Max retry attempts exceeded",
+                    extra={
+                        "json_fields": {
+                            "delivery_attempt": delivery_attempt,
+                            "max_attempts": MAX_RETRY_ATTEMPTS,
+                            "verification_count": len(verification_ids),
+                            "verification_id": verification_ids_str[0]
+                            if verification_ids_str
+                            else None,
+                            "verification_ids": verification_ids_str,
+                            "base_operation": "fact_check",
+                            "operation": "fact_check_retry_exhausted",
+                        },
+                        "labels": {
+                            "component": "fact_check_worker",
+                            "severity": "high",
+                        },
+                    },
                 )
 
                 # Mark all verifications as failed due to max retries
@@ -111,9 +143,26 @@ async def process_check_fact_callback(message: ReceivedMessage):
             # If no verifications need processing, acknowledge early
             if not processing_results["needs_processing"]:
                 logger.info(
-                    f"No processing needed - completed: {len(processing_results['already_completed'])}, "
-                    f"pending: {len(processing_results['already_pending'])}, "
-                    f"failed: {len(processing_results['already_failed'])}"
+                    "No fact check processing needed",
+                    extra={
+                        "json_fields": {
+                            "already_completed": len(
+                                processing_results["already_completed"]
+                            ),
+                            "already_pending": len(
+                                processing_results["already_pending"]
+                            ),
+                            "already_failed": len(processing_results["already_failed"]),
+                            "total_verifications": len(verification_ids),
+                            "verification_id": verification_ids_str[0]
+                            if verification_ids_str
+                            else None,
+                            "verification_ids": verification_ids_str,
+                            "base_operation": "fact_check",
+                            "operation": "fact_check_skipped",
+                        },
+                        "labels": {"component": "fact_check_worker", "phase": "skip"},
+                    },
                 )
 
                 langfuse.update_current_trace(
@@ -129,8 +178,25 @@ async def process_check_fact_callback(message: ReceivedMessage):
                 return
 
             # Set verifications to PENDING status and acknowledge message early
+            needs_processing_ids = [
+                str(vid) for vid in processing_results["needs_processing"]
+            ]
             logger.info(
-                f"Setting {len(processing_results['needs_processing'])} verifications to PENDING status"
+                "Setting verifications to PENDING status",
+                extra={
+                    "json_fields": {
+                        "verification_count": len(
+                            processing_results["needs_processing"]
+                        ),
+                        "verification_id": needs_processing_ids[0]
+                        if needs_processing_ids
+                        else None,
+                        "verification_ids": needs_processing_ids,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_pending_set",
+                    },
+                    "labels": {"component": "fact_check_worker", "phase": "prepare"},
+                },
             )
             await _set_pending_status(
                 processing_results["needs_processing"], message_id, delivery_attempt
@@ -138,14 +204,46 @@ async def process_check_fact_callback(message: ReceivedMessage):
 
             # Process the fact check - this will create its own comprehensive spans
             logger.info(
-                f"Starting fact check processing for {len(processing_results['needs_processing'])} verifications"
+                "Starting fact check processing",
+                extra={
+                    "json_fields": {
+                        "verification_count": len(
+                            processing_results["needs_processing"]
+                        ),
+                        "verification_id": needs_processing_ids[0]
+                        if needs_processing_ids
+                        else None,
+                        "verification_ids": needs_processing_ids,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_processing_start",
+                    },
+                    "labels": {"component": "fact_check_worker", "phase": "process"},
+                },
             )
             await check_fact(processing_results["needs_processing"])
 
             end_time = time.time()
             duration_ms = (end_time - start_time) * 1000
 
-            logger.info(f"Fact check completed in {end_time - start_time} seconds")
+            logger.info(
+                "Fact check processing completed",
+                extra={
+                    "json_fields": {
+                        "verification_count": len(
+                            processing_results["needs_processing"]
+                        ),
+                        "processing_time_seconds": round(end_time - start_time, 2),
+                        "delivery_attempt": delivery_attempt,
+                        "verification_id": needs_processing_ids[0]
+                        if needs_processing_ids
+                        else None,
+                        "verification_ids": needs_processing_ids,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_processing_complete",
+                    },
+                    "labels": {"component": "fact_check_worker", "phase": "complete"},
+                },
+            )
 
             # Set trace output
             langfuse.update_current_trace(
@@ -168,7 +266,25 @@ async def process_check_fact_callback(message: ReceivedMessage):
             end_time = time.time()
             duration_ms = (end_time - start_time) * 1000
 
-            logger.error(f"Error in fact check callback: {e}", exc_info=True)
+            logger.error(
+                "Fact check processing failed",
+                extra={
+                    "json_fields": {
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "delivery_attempt": delivery_attempt,
+                        "processing_time_seconds": round(end_time - start_time, 2),
+                        "verification_id": verification_ids_str[0]
+                        if verification_ids_str
+                        else None,
+                        "verification_ids": verification_ids_str,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_processing_error",
+                    },
+                    "labels": {"component": "fact_check_worker", "severity": "high"},
+                },
+                exc_info=True,
+            )
 
             # Set trace output for error case
             langfuse.update_current_trace(
@@ -209,6 +325,24 @@ async def _check_and_prepare_verifications(
     verifications = await mongo.verifications.aggregate(pipeline)
     verification_states = {v["_id"]: v.get("fact_check_status") for v in verifications}
 
+    verification_ids_str = [str(vid) for vid in verification_ids]
+    logger.debug(
+        "Verification states analyzed",
+        extra={
+            "json_fields": {
+                "total_requested": len(verification_ids),
+                "found_in_db": len(verification_states),
+                "verification_id": verification_ids_str[0]
+                if verification_ids_str
+                else None,
+                "verification_ids": verification_ids_str,
+                "base_operation": "fact_check",
+                "operation": "fact_check_state_analysis",
+            },
+            "labels": {"component": "fact_check_worker", "phase": "analyze"},
+        },
+    )
+
     results = {
         "needs_processing": [],
         "already_completed": [],
@@ -233,6 +367,26 @@ async def _check_and_prepare_verifications(
             # Any other status, treat as needs processing
             results["needs_processing"].append(verification_id)
 
+    logger.info(
+        "Verification processing requirements determined",
+        extra={
+            "json_fields": {
+                "needs_processing": len(results["needs_processing"]),
+                "already_completed": len(results["already_completed"]),
+                "already_pending": len(results["already_pending"]),
+                "already_failed": len(results["already_failed"]),
+                "not_found": len(results["not_found"]),
+                "verification_id": verification_ids_str[0]
+                if verification_ids_str
+                else None,
+                "verification_ids": verification_ids_str,
+                "base_operation": "fact_check",
+                "operation": "fact_check_requirements_determined",
+            },
+            "labels": {"component": "fact_check_worker", "phase": "analyze"},
+        },
+    )
+
     return results
 
 
@@ -252,18 +406,62 @@ async def _set_pending_status(
             {"$set": {"fact_check_status": "PENDING"}},
         )
 
+        verification_ids_str = [str(vid) for vid in verification_ids]
         if result.matched_count != len(verification_ids):
             logger.warning(
-                f"Not all verifications were found when setting PENDING status. "
-                f"Expected: {len(verification_ids)}, Found: {result.matched_count}"
+                "Not all verifications found for PENDING status update",
+                extra={
+                    "json_fields": {
+                        "expected_count": len(verification_ids),
+                        "found_count": result.matched_count,
+                        "modified_count": result.modified_count,
+                        "verification_id": verification_ids_str[0]
+                        if verification_ids_str
+                        else None,
+                        "verification_ids": verification_ids_str,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_pending_partial",
+                    },
+                    "labels": {"component": "fact_check_worker", "severity": "medium"},
+                },
             )
         else:
-            logger.info(
-                f"Successfully set {result.modified_count} verifications to PENDING status"
+            logger.debug(
+                "Successfully set verifications to PENDING status",
+                extra={
+                    "json_fields": {
+                        "modified_count": result.modified_count,
+                        "verification_count": len(verification_ids),
+                        "verification_id": verification_ids_str[0]
+                        if verification_ids_str
+                        else None,
+                        "verification_ids": verification_ids_str,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_pending_success",
+                    },
+                    "labels": {"component": "fact_check_worker"},
+                },
             )
 
     except Exception as e:
-        logger.error(f"Error setting PENDING status: {e}", exc_info=True)
+        logger.error(
+            "Failed to set PENDING status",
+            extra={
+                "json_fields": {
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "verification_count": len(verification_ids),
+                    "verification_id": verification_ids_str[0]
+                    if verification_ids_str
+                    else None,
+                    "verification_ids": verification_ids_str,
+                    "base_operation": "fact_check",
+                    "operation": "fact_check_pending_error",
+                },
+                "labels": {"component": "fact_check_worker", "severity": "high"},
+            },
+            exc_info=True,
+        )
         # Don't raise here - we want to continue with processing
 
 
@@ -284,9 +482,41 @@ async def _mark_verifications_failed(
             },
         )
 
+        verification_ids_str = [str(vid) for vid in verification_ids]
         logger.info(
-            f"Marked {len(verification_ids)} verifications as FAILED due to: {error_reason}"
+            "Marked verifications as FAILED due to retry exhaustion",
+            extra={
+                "json_fields": {
+                    "verification_count": len(verification_ids),
+                    "error_reason": error_reason,
+                    "verification_id": verification_ids_str[0]
+                    if verification_ids_str
+                    else None,
+                    "verification_ids": verification_ids_str,
+                    "base_operation": "fact_check",
+                    "operation": "fact_check_mark_failed",
+                },
+                "labels": {"component": "fact_check_worker", "phase": "cleanup"},
+            },
         )
 
     except Exception as e:
-        logger.error(f"Error marking verifications as failed: {e}", exc_info=True)
+        logger.error(
+            "Failed to mark verifications as FAILED",
+            extra={
+                "json_fields": {
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "verification_count": len(verification_ids),
+                    "error_reason": error_reason,
+                    "verification_id": verification_ids_str[0]
+                    if verification_ids_str
+                    else None,
+                    "verification_ids": verification_ids_str,
+                    "base_operation": "fact_check",
+                    "operation": "fact_check_mark_failed_error",
+                },
+                "labels": {"component": "fact_check_worker", "severity": "high"},
+            },
+            exc_info=True,
+        )

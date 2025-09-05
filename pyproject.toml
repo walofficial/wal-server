@@ -131,6 +131,7 @@ dependencies = [
     "google-cloud-vision>=3.10.1",
     "langfuse==3.3.0",
     "pydantic-xml>=2.17.3",
+    "structlog>=25.4.0",
 ]
 
 [dependency-groups]

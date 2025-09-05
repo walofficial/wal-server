@@ -4,6 +4,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from langfuse import observe
+
 from ment_api.common.custom_object_id import CustomObjectId
 from ment_api.configurations.config import settings
 from ment_api.models.fact_checking_models import (
@@ -66,7 +67,17 @@ async def update_verification_status(
 
         if update_result.modified_count == 0:
             logger.warning(
-                f"Wasn't modified verification with ID {verification_id} data: {update_dict}"
+                "Verification status update had no effect",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "status": status,
+                        "update_data": update_dict,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_status_update_no_effect",
+                    },
+                    "labels": {"component": "fact_check_service", "severity": "medium"},
+                },
             )
 
             return False
@@ -122,6 +133,23 @@ async def check_fact(
     results = await mongo_client.db["verifications"].aggregate(pipeline)
     verification_list = await results.to_list(length=1)
     verification = verification_list[0] if verification_list else None
+
+    verification_ids_str = [str(vid) for vid in verification_ids]
+    logger.info(
+        "Fact check service started",
+        extra={
+            "json_fields": {
+                "verification_id": verification_ids_str[0]
+                if verification_ids_str
+                else None,
+                "verification_ids": verification_ids_str,
+                "verification_found": bool(verification),
+                "base_operation": "fact_check",
+                "operation": "fact_check_service_start",
+            },
+            "labels": {"component": "fact_check_service", "phase": "start"},
+        },
+    )
     await mongo.verifications.update_one(
         {"_id": verification_ids[0]},
         {
@@ -133,7 +161,20 @@ async def check_fact(
         },
     )
     if verification is None:
-        logger.error(f"Verifications with IDs {verification_ids} not found")
+        logger.error(
+            "Verification not found for fact check",
+            extra={
+                "json_fields": {
+                    "verification_id": verification_ids_str[0]
+                    if verification_ids_str
+                    else None,
+                    "verification_ids": verification_ids_str,
+                    "base_operation": "fact_check",
+                    "operation": "fact_check_verification_not_found",
+                },
+                "labels": {"component": "fact_check_service", "severity": "high"},
+            },
+        )
 
         return None
 
@@ -166,15 +207,48 @@ async def check_fact(
         # Only update to PENDING if not already set (this handles the case where worker set it)
         if not was_already_pending:
             await update_verification_status(verification_id, "PENDING")
+            logger.info(
+                "Verification status updated to PENDING",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "was_retry": False,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_status_pending",
+                    },
+                    "labels": {"component": "fact_check_service", "phase": "prepare"},
+                },
+            )
+        else:
+            logger.info(
+                "Verification already in PENDING status (retry)",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "was_retry": True,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_status_already_pending",
+                    },
+                    "labels": {"component": "fact_check_service", "phase": "prepare"},
+                },
+            )
 
         # Extract statement with logging - this function now uses @observe decorator
         statement = await extract_statement(verification)
-        if statement:
-            logger.info(
-                f"Extracted statement for verification {verification_id} (length: {len(statement)} chars)"
-            )
-        else:
-            logger.info(f"No statement extracted for verification {verification_id}")
+
+        logger.info(
+            "Statement extraction completed",
+            extra={
+                "json_fields": {
+                    "verification_id": str(verification_id),
+                    "has_statement": bool(statement),
+                    "statement_length": len(statement) if statement else 0,
+                    "base_operation": "fact_check",
+                    "operation": "fact_check_statement_extracted",
+                },
+                "labels": {"component": "fact_check_service", "phase": "extract"},
+            },
+        )
 
         # Get image URLs if present
         image_urls = [
@@ -199,7 +273,18 @@ async def check_fact(
         # Step 1: Extract text from images using OCR if images are present
         extracted_image_text = None
         if image_urls:
-            logger.info(f"Processing {len(image_urls)} images for OCR text extraction")
+            logger.info(
+                "Starting OCR text extraction from images",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "image_count": len(image_urls),
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_ocr_start",
+                    },
+                    "labels": {"component": "fact_check_service", "phase": "ocr"},
+                },
+            )
             # Keep manual span for fine-grained OCR tracing
             with langfuse.start_as_current_span(name="ocr_extraction") as ocr_span:
                 ocr_start_time = time.time()
@@ -244,14 +329,28 @@ async def check_fact(
                         },
                     )
 
-                    if extracted_image_text:
-                        logger.info(
-                            f"Successfully extracted text from {ocr_response.successful_extractions}/{len(image_urls)} images"
-                        )
-                    else:
-                        logger.info(
-                            f"No text found in any of the {len(image_urls)} images"
-                        )
+                    logger.info(
+                        "OCR text extraction completed",
+                        extra={
+                            "json_fields": {
+                                "verification_id": str(verification_id),
+                                "successful_extractions": ocr_response.successful_extractions,
+                                "total_images": len(image_urls),
+                                "has_extracted_text": bool(extracted_image_text),
+                                "text_length": len(extracted_image_text)
+                                if extracted_image_text
+                                else 0,
+                                "success_rate": ocr_response.successful_extractions
+                                / len(image_urls),
+                                "base_operation": "fact_check",
+                                "operation": "fact_check_ocr_complete",
+                            },
+                            "labels": {
+                                "component": "fact_check_service",
+                                "phase": "ocr",
+                            },
+                        },
+                    )
 
                 except Exception as e:
                     ocr_duration = (time.time() - ocr_start_time) * 1000
@@ -261,7 +360,23 @@ async def check_fact(
                         metadata={"error": str(e), "duration_ms": ocr_duration},
                     )
 
-                    logger.error(f"Error during OCR extraction: {e}")
+                    logger.error(
+                        "OCR text extraction failed",
+                        extra={
+                            "json_fields": {
+                                "verification_id": str(verification_id),
+                                "error": str(e),
+                                "error_type": type(e).__name__,
+                                "image_count": len(image_urls),
+                                "base_operation": "fact_check",
+                                "operation": "fact_check_ocr_error",
+                            },
+                            "labels": {
+                                "component": "fact_check_service",
+                                "severity": "medium",
+                            },
+                        },
+                    )
                     # Continue without image text - don't fail the entire fact check
                     extracted_image_text = None
 
@@ -296,7 +411,21 @@ async def check_fact(
 
             # Gemini analysis happens within its own span in the gemini_client
             logger.info(
-                f"Requesting Gemini analysis for verification {verification_id}"
+                "Starting Gemini analysis for fact check validation",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "statement_length": len(combined_statement),
+                        "image_count": len(image_urls),
+                        "is_social_media": verification.get(
+                            "social_media_scrape_status"
+                        )
+                        == "COMPLETED",
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_gemini_start",
+                    },
+                    "labels": {"component": "fact_check_service", "phase": "gemini"},
+                },
             )
             gemini_request = FactCheckInputRequest(
                 statement=combined_statement,
@@ -312,7 +441,19 @@ async def check_fact(
 
             if not enhanced_input.is_valid_for_fact_check:
                 logger.warning(
-                    f"Gemini analysis failed - not valid for fact check: {enhanced_input.error_reason}"
+                    "Gemini analysis determined content not valid for fact check",
+                    extra={
+                        "json_fields": {
+                            "verification_id": str(verification_id),
+                            "error_reason": enhanced_input.error_reason,
+                            "base_operation": "fact_check",
+                            "operation": "fact_check_gemini_invalid",
+                        },
+                        "labels": {
+                            "component": "fact_check_service",
+                            "phase": "gemini",
+                        },
+                    },
                 )
                 await update_verification_status(
                     verification_id,
@@ -347,11 +488,31 @@ async def check_fact(
                 return None
             enhanced_statement = enhanced_input.enhanced_statement
             logger.info(
-                f"Gemini analysis successful for verification {verification_id} - enhanced statement length: {len(enhanced_statement)} chars"
+                "Gemini analysis completed successfully",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "enhanced_statement_length": len(enhanced_statement),
+                        "has_preview_data": bool(enhanced_input.preview_data),
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_gemini_success",
+                    },
+                    "labels": {"component": "fact_check_service", "phase": "gemini"},
+                },
             )
         else:
             logger.warning(
-                "No statement or images extracted from verification, skipping fact check"
+                "No content available for fact checking",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "has_statement": bool(statement),
+                        "image_count": len(image_urls),
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_no_content",
+                    },
+                    "labels": {"component": "fact_check_service", "phase": "validate"},
+                },
             )
             await update_verification_status(
                 verification_id, "FAILED", {"error": "No statement to check"}
@@ -391,22 +552,66 @@ async def check_fact(
         )
 
         logger.info(
-            f"Starting Jina fact check for verification {verification_id} with {budget_tokens} token budget"
+            "Starting Jina fact check analysis",
+            extra={
+                "json_fields": {
+                    "verification_id": str(verification_id),
+                    "budget_tokens": budget_tokens,
+                    "enhanced_statement_length": len(enhanced_statement),
+                    "sources_count": len(verification.get("sources", [])),
+                    "base_operation": "fact_check",
+                    "operation": "fact_check_jina_start",
+                },
+                "labels": {"component": "fact_check_service", "phase": "jina"},
+            },
         )
         try:
             fact_check_data = await jina_check_fact(jina_request)
             if fact_check_data:
                 logger.info(
-                    f"Jina fact check completed for verification {verification_id} - factuality: {fact_check_data.factuality}"
+                    "Jina fact check completed successfully",
+                    extra={
+                        "json_fields": {
+                            "verification_id": str(verification_id),
+                            "factuality_score": fact_check_data.factuality,
+                            "references_count": len(fact_check_data.references)
+                            if hasattr(fact_check_data, "references")
+                            else 0,
+                            "base_operation": "fact_check",
+                            "operation": "fact_check_jina_success",
+                        },
+                        "labels": {"component": "fact_check_service", "phase": "jina"},
+                    },
                 )
             else:
                 logger.error(
-                    f"Jina fact check returned no data for verification {verification_id}"
+                    "Jina fact check returned no data",
+                    extra={
+                        "json_fields": {
+                            "verification_id": str(verification_id),
+                            "base_operation": "fact_check",
+                            "operation": "fact_check_jina_no_data",
+                        },
+                        "labels": {
+                            "component": "fact_check_service",
+                            "severity": "high",
+                        },
+                    },
                 )
 
         except Exception as e:
             logger.error(
-                f"Jina fact check failed for verification {verification_id}: {e}"
+                "Jina fact check failed",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_jina_error",
+                    },
+                    "labels": {"component": "fact_check_service", "severity": "high"},
+                },
             )
             # Don't re-raise, let the function handle None result
             fact_check_data = None
@@ -416,7 +621,15 @@ async def check_fact(
                 verification_id, "FAILED", {"error": "Failed to check fact"}
             )
             logger.error(
-                f"Failed to check fact for verification with ID {verification_id}"
+                "Fact check process failed - no data returned",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_failed",
+                    },
+                    "labels": {"component": "fact_check_service", "severity": "high"},
+                },
             )
             if not verification.get("is_generated_news"):
                 await send_notification(
@@ -475,12 +688,36 @@ async def check_fact(
             {"$set": update_data},
         )
 
+        logger.info(
+            "Fact check data stored in database",
+            extra={
+                "json_fields": {
+                    "verification_id": str(verification_id),
+                    "has_preview_data": bool(enhanced_input.preview_data),
+                    "factuality_score": fact_check_data.factuality,
+                    "base_operation": "fact_check",
+                    "operation": "fact_check_data_stored",
+                },
+                "labels": {"component": "fact_check_service", "phase": "store"},
+            },
+        )
+
         # Trigger translation after successful fact check completion
         try:
             await publish_translation_request(verification_id)
         except Exception as e:
             logger.error(
-                f"Failed to publish translation request for verification {verification_id}: {e}"
+                "Failed to publish translation request",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_translation_error",
+                    },
+                    "labels": {"component": "fact_check_service", "severity": "medium"},
+                },
             )
 
         # Send notification that fact checking is completed
@@ -496,7 +733,18 @@ async def check_fact(
             )
 
         # Step 4: Generate score after fact check is completed
-        logger.info(f"Starting score generation for verification {verification_id}")
+        logger.info(
+            "Starting score generation",
+            extra={
+                "json_fields": {
+                    "verification_id": str(verification_id),
+                    "factuality_score": fact_check_data.factuality,
+                    "base_operation": "fact_check",
+                    "operation": "fact_check_score_start",
+                },
+                "labels": {"component": "fact_check_service", "phase": "score"},
+            },
+        )
         # Keep manual span for score generation fine-grained control
 
         score_response = await generate_score(
@@ -504,7 +752,31 @@ async def check_fact(
         )
 
         logger.info(
-            f"Score is {score_response.score} because {score_response.reasoning} and justification is {score_response.justification}"
+            "Score generation completed",
+            extra={
+                "json_fields": {
+                    "verification_id": str(verification_id),
+                    "final_score": score_response.score,
+                    "factuality_score": fact_check_data.factuality,
+                    "base_operation": "fact_check",
+                    "operation": "fact_check_score_complete",
+                },
+                "labels": {"component": "fact_check_service", "phase": "score"},
+            },
+        )
+
+        logger.debug(
+            "Score generation details",
+            extra={
+                "json_fields": {
+                    "verification_id": str(verification_id),
+                    "score_reasoning": score_response.reasoning,
+                    "score_justification": score_response.justification,
+                    "base_operation": "fact_check",
+                    "operation": "fact_check_score_details",
+                },
+                "labels": {"component": "fact_check_service", "phase": "score"},
+            },
         )
 
         # Update with the score data after it's generated
@@ -537,7 +809,20 @@ async def check_fact(
         )
 
     logger.info(
-        f"Fact check service completed successfully for verification {verification_id} - final score: {score_response.score}"
+        "Fact check service completed successfully",
+        extra={
+            "json_fields": {
+                "verification_id": str(verification_id),
+                "final_score": score_response.score,
+                "factuality_score": fact_check_data.factuality,
+                "processing_duration_seconds": round(
+                    (time.time() - verification_start_time), 2
+                ),
+                "base_operation": "fact_check",
+                "operation": "fact_check_complete",
+            },
+            "labels": {"component": "fact_check_service", "phase": "complete"},
+        },
     )
     return fact_check_data
 
@@ -602,7 +887,19 @@ async def extract_statement(verification: LocationFeedPost) -> str:
             video_summary.get("statements") is not None
             and len(video_summary.get("statements")) > 0
         ):
-            logger.info("Using video summary statements for fact checking")
+            logger.debug(
+                "Using video summary statements for extraction",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "statements_count": len(video_summary.get("statements")),
+                        "source": "video_statements",
+                        "base_operation": "fact_check",
+                        "operation": "statement_extract_video_statements",
+                    },
+                    "labels": {"component": "fact_check_service", "phase": "extract"},
+                },
+            )
 
             components.append(" ".join(video_summary.get("statements")))
 
@@ -611,7 +908,21 @@ async def extract_statement(verification: LocationFeedPost) -> str:
             video_summary.get("relevant_statements") is not None
             and len(video_summary.get("relevant_statements")) > 0
         ):
-            logger.info("Using video summary relevant_statements for fact checking")
+            logger.debug(
+                "Using video relevant statements for extraction",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "relevant_statements_count": len(
+                            video_summary.get("relevant_statements")
+                        ),
+                        "source": "video_relevant_statements",
+                        "base_operation": "fact_check",
+                        "operation": "statement_extract_video_relevant",
+                    },
+                    "labels": {"component": "fact_check_service", "phase": "extract"},
+                },
+            )
             statements = [
                 item.get("text")
                 for item in video_summary.get("relevant_statements")
@@ -621,7 +932,19 @@ async def extract_statement(verification: LocationFeedPost) -> str:
 
         # If neither available, try to use short_summary
         elif video_summary.get("short_summary"):
-            logger.info("Using video summary short_summary for fact checking")
+            logger.debug(
+                "Using video short summary for extraction",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "summary_length": len(video_summary.get("short_summary")),
+                        "source": "video_short_summary",
+                        "base_operation": "fact_check",
+                        "operation": "statement_extract_video_summary",
+                    },
+                    "labels": {"component": "fact_check_service", "phase": "extract"},
+                },
+            )
 
             components.append("Video Summary: " + video_summary.get("short_summary"))
 
@@ -641,7 +964,19 @@ async def extract_statement(verification: LocationFeedPost) -> str:
     # If nothing else is available, use the original text content
     if verification.get("text_content"):
         result = verification.get("text_content")
-        logger.info("Using original text content for fact checking")
+        logger.debug(
+            "Using original text content for extraction",
+            extra={
+                "json_fields": {
+                    "verification_id": str(verification_id),
+                    "text_length": len(result),
+                    "source": "text_content",
+                    "base_operation": "fact_check",
+                    "operation": "statement_extract_text_content",
+                },
+                "labels": {"component": "fact_check_service", "phase": "extract"},
+            },
+        )
 
         # Update trace output using v3 pattern
         langfuse.update_current_trace(

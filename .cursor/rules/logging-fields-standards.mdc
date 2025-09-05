@@ -1,0 +1,75 @@
+---
+description: "Standardized field names for consistent logging"
+---
+
+# Logging Field Standards
+
+## Required Fields
+
+Every log entry MUST include:
+
+- `operation` - What happened (e.g., "user_login", "fact_check", "db_query")
+- `labels.component` - Which service/component
+
+## Standard Field Names
+
+### Core Fields
+
+- `operation`: Operation identifier
+- `duration_ms`: Time in milliseconds
+- `status`: "started" | "completed" | "failed" | "in_progress"
+
+### Context Fields
+
+- `user_id`, `session_id`, `request_id`
+- `fact_id`, `collection`, `endpoint`
+
+### Error Fields
+
+- `error`: Error message
+- `error_type`: Exception class name
+- `error_code`: "AUTH_001" or "DB_CONNECTION_FAILED"
+
+## Standard Labels
+
+```python
+"labels": {
+    "service": "ment_api",
+    "component": "fact_checker",  # REQUIRED
+    "environment": "prod",
+    "operation": "verify",
+    "phase": "start" | "complete" | "error"
+}
+```
+
+## Value Formats
+
+- **Timestamps**: `datetime.utcnow().isoformat()`
+- **Durations**: `round((end - start) * 1000, 2)` (milliseconds)
+- **IDs**: Use existing format from your domain (user_id, fact_id, etc.)
+
+## Field Validation
+
+1. Use snake_case for field names
+2. Keep values under 1KB per field
+3. Never log sensitive data (passwords, tokens)
+4. Include enough context to understand the event
+
+## Example from [check_fact_service.py](mdc:src/ment_api/services/check_fact_service.py)
+
+```python
+logging.info("Fact verification completed", extra={
+    "json_fields": {
+        "operation": "fact_verify",
+        "fact_id": fact_id,
+        "confidence_score": 0.87,
+        "processing_time_ms": 1250,
+        "status": "completed"
+    },
+    "labels": {
+        "service": "ment_api",
+        "component": "fact_checker",
+        "phase": "complete"
+    }
+})
+```

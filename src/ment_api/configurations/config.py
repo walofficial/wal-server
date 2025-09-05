@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     google_maps_api_key: str
     k_revision: str = "1.0.0"
     groq_key: str
+    wal_url: str
+
     langfuse_host: str
     langfuse_public_key: str
     langfuse_secret_key: str
