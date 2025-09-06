@@ -3,7 +3,6 @@ import time
 from typing import Dict, List
 
 from google.pubsub_v1 import ReceivedMessage
-from langfuse import observe
 
 from ment_api.common.custom_object_id import CustomObjectId
 from ment_api.events.news_created_event import NewsCreatedEvent
@@ -22,7 +21,6 @@ MAX_RETRY_ATTEMPTS = 2
 # langfuse is imported directly from langfuse_client
 
 
-@observe()
 async def process_check_fact_callback(message: ReceivedMessage):
     """
     Process fact check callback with comprehensive Langfuse tracing and idempotency.
@@ -33,66 +31,61 @@ async def process_check_fact_callback(message: ReceivedMessage):
     - Retry limit handling
     - Proper error handling and logging
     """
-    with langfuse.start_as_current_span(name="process_check_fact_callback"):
+    with langfuse.start_as_current_span(
+        name="process_check_fact_callback"
+    ) as worker_span:
         start_time = time.time()
         message_id = message.message.message_id
 
-        # Extract retry count from message attributes (Pub/Sub automatically adds delivery_attempt)
-        delivery_attempt = int(
-            message.message.attributes.get("googclient_deliveryattempt", "1")
-        )
-
-        # Set trace-level attributes using the global client
-        langfuse.update_current_trace(
-            input={
-                "message_id": message_id,
-                "delivery_attempt": delivery_attempt,
-                "message_data_preview": message.message.data.decode()[:200],
-            },
-            metadata={
-                "worker_type": "fact_check",
-                "pubsub_subscription": "check_fact_subscription",
-                "max_retry_attempts": MAX_RETRY_ATTEMPTS,
-            },
-        )
+        delivery_attempt = message.delivery_attempt
 
         try:
-            # Parse the event
-            news_created_event = NewsCreatedEvent.model_validate_json(
-                message.message.data.decode()
-            )
-            verification_ids = news_created_event.verifications
-            verification_ids_str = [str(v_id) for v_id in verification_ids]
+            # Parse the event with span tracking
+            with worker_span.start_as_current_span(
+                name="message_parsing"
+            ) as parse_span:
+                news_created_event = NewsCreatedEvent.model_validate_json(
+                    message.message.data.decode()
+                )
+                verification_ids = news_created_event.verifications
+                verification_ids_str = [str(v_id) for v_id in verification_ids]
 
-            logger.info(
-                "Fact check message received",
-                extra={
-                    "json_fields": {
-                        "verification_count": len(verification_ids),
-                        "delivery_attempt": delivery_attempt,
-                        "max_attempts": MAX_RETRY_ATTEMPTS,
+                langfuse.update_current_trace(session_id=verification_ids_str[0])
+
+                parse_span.update(
+                    input={
                         "message_id": message_id,
-                        "verification_id": verification_ids_str[0]
-                        if verification_ids_str
-                        else None,
-                        "verification_ids": verification_ids_str,
-                        "base_operation": "fact_check",
-                        "operation": "fact_check_message_received",
+                        "raw_data_length": len(message.message.data.decode()),
                     },
-                    "labels": {"component": "fact_check_worker", "phase": "start"},
-                },
-            )
+                    output={
+                        "verification_count": len(verification_ids),
+                        "verification_ids": verification_ids_str,
+                        "event_type": "NewsCreatedEvent",
+                    },
+                    metadata={
+                        "operation": "message_parsing",
+                        "worker_type": "fact_check",
+                    },
+                )
 
-            # Update trace with parsed event data
-            langfuse.update_current_trace(
-                input={
-                    "message_id": message_id,
-                    "delivery_attempt": delivery_attempt,
-                    "verification_count": len(verification_ids),
-                    "verification_ids": verification_ids_str,
-                    "event_type": "NewsCreatedEvent",
-                }
-            )
+                logger.info(
+                    "Fact check message received",
+                    extra={
+                        "json_fields": {
+                            "verification_count": len(verification_ids),
+                            "delivery_attempt": delivery_attempt,
+                            "max_attempts": MAX_RETRY_ATTEMPTS,
+                            "message_id": message_id,
+                            "verification_id": verification_ids_str[0]
+                            if verification_ids_str
+                            else None,
+                            "verification_ids": verification_ids_str,
+                            "base_operation": "fact_check",
+                            "operation": "fact_check_message_received",
+                        },
+                        "labels": {"component": "fact_check_worker", "phase": "start"},
+                    },
+                )
 
             # Check if we've exceeded retry limit
             if delivery_attempt > MAX_RETRY_ATTEMPTS:
@@ -136,9 +129,35 @@ async def process_check_fact_callback(message: ReceivedMessage):
                 return
 
             # Check verification states and filter what needs processing
-            processing_results = await _check_and_prepare_verifications(
-                verification_ids, message_id, delivery_attempt
-            )
+            with worker_span.start_as_current_span(
+                name="verification_state_check"
+            ) as state_span:
+                state_span.update(
+                    input={
+                        "verification_count": len(verification_ids),
+                        "verification_ids": verification_ids_str,
+                    },
+                    metadata={
+                        "operation": "verification_state_check",
+                        "worker_type": "fact_check",
+                    },
+                )
+
+                processing_results = await _check_and_prepare_verifications(
+                    verification_ids, message_id, delivery_attempt
+                )
+
+                state_span.update(
+                    output={
+                        "needs_processing": len(processing_results["needs_processing"]),
+                        "already_completed": len(
+                            processing_results["already_completed"]
+                        ),
+                        "already_pending": len(processing_results["already_pending"]),
+                        "already_failed": len(processing_results["already_failed"]),
+                        "not_found": len(processing_results.get("not_found", [])),
+                    }
+                )
 
             # If no verifications need processing, acknowledge early
             if not processing_results["needs_processing"]:
@@ -164,23 +183,13 @@ async def process_check_fact_callback(message: ReceivedMessage):
                         "labels": {"component": "fact_check_worker", "phase": "skip"},
                     },
                 )
-
-                langfuse.update_current_trace(
-                    output={
-                        "status": "NO_PROCESSING_NEEDED",
-                        "already_completed": len(
-                            processing_results["already_completed"]
-                        ),
-                        "already_pending": len(processing_results["already_pending"]),
-                        "already_failed": len(processing_results["already_failed"]),
-                    },
-                )
                 return
 
             # Set verifications to PENDING status and acknowledge message early
             needs_processing_ids = [
                 str(vid) for vid in processing_results["needs_processing"]
             ]
+
             logger.info(
                 "Setting verifications to PENDING status",
                 extra={
@@ -195,32 +204,68 @@ async def process_check_fact_callback(message: ReceivedMessage):
                         "base_operation": "fact_check",
                         "operation": "fact_check_pending_set",
                     },
-                    "labels": {"component": "fact_check_worker", "phase": "prepare"},
+                    "labels": {
+                        "component": "fact_check_worker",
+                        "phase": "prepare",
+                    },
                 },
             )
+
             await _set_pending_status(
                 processing_results["needs_processing"], message_id, delivery_attempt
             )
 
             # Process the fact check - this will create its own comprehensive spans
-            logger.info(
-                "Starting fact check processing",
-                extra={
-                    "json_fields": {
+            with worker_span.start_as_current_span(
+                name="fact_check_processing"
+            ) as process_span:
+                process_span.update(
+                    input={
                         "verification_count": len(
                             processing_results["needs_processing"]
                         ),
-                        "verification_id": needs_processing_ids[0]
+                        "verification_ids": needs_processing_ids,
+                        "primary_verification_id": needs_processing_ids[0]
                         if needs_processing_ids
                         else None,
-                        "verification_ids": needs_processing_ids,
-                        "base_operation": "fact_check",
-                        "operation": "fact_check_processing_start",
                     },
-                    "labels": {"component": "fact_check_worker", "phase": "process"},
-                },
-            )
-            await check_fact(processing_results["needs_processing"])
+                    metadata={
+                        "operation": "fact_check_processing",
+                        "worker_type": "fact_check",
+                    },
+                )
+
+                logger.info(
+                    "Starting fact check processing",
+                    extra={
+                        "json_fields": {
+                            "verification_count": len(
+                                processing_results["needs_processing"]
+                            ),
+                            "verification_id": needs_processing_ids[0]
+                            if needs_processing_ids
+                            else None,
+                            "verification_ids": needs_processing_ids,
+                            "base_operation": "fact_check",
+                            "operation": "fact_check_processing_start",
+                        },
+                        "labels": {
+                            "component": "fact_check_worker",
+                            "phase": "process",
+                        },
+                    },
+                )
+
+                await check_fact(processing_results["needs_processing"][0])
+
+                process_span.update(
+                    output={
+                        "processing_completed": True,
+                        "verification_count": len(
+                            processing_results["needs_processing"]
+                        ),
+                    }
+                )
 
             end_time = time.time()
             duration_ms = (end_time - start_time) * 1000
@@ -422,7 +467,10 @@ async def _set_pending_status(
                         "base_operation": "fact_check",
                         "operation": "fact_check_pending_partial",
                     },
-                    "labels": {"component": "fact_check_worker", "severity": "medium"},
+                    "labels": {
+                        "component": "fact_check_worker",
+                        "severity": "medium",
+                    },
                 },
             )
         else:
@@ -471,52 +519,83 @@ async def _mark_verifications_failed(
     """
     Mark verifications as FAILED due to retry exhaustion.
     """
-    try:
-        await mongo.verifications.update_many(
-            {"_id": {"$in": verification_ids}},
-            {
-                "$set": {
-                    "fact_check_status": "FAILED",
-                    "error": error_reason,
-                }
+    with langfuse.start_as_current_span(
+        name="mark-verifications-failed"
+    ) as failed_span:
+        failed_span.update(
+            input={
+                "verification_count": len(verification_ids),
+                "verification_ids": [str(vid) for vid in verification_ids],
+                "error_reason": error_reason,
+            },
+            metadata={
+                "operation": "mark_verifications_failed",
+                "helper_function": "_mark_verifications_failed",
             },
         )
 
-        verification_ids_str = [str(vid) for vid in verification_ids]
-        logger.info(
-            "Marked verifications as FAILED due to retry exhaustion",
-            extra={
-                "json_fields": {
-                    "verification_count": len(verification_ids),
-                    "error_reason": error_reason,
-                    "verification_id": verification_ids_str[0]
-                    if verification_ids_str
-                    else None,
-                    "verification_ids": verification_ids_str,
-                    "base_operation": "fact_check",
-                    "operation": "fact_check_mark_failed",
+        try:
+            result = await mongo.verifications.update_many(
+                {"_id": {"$in": verification_ids}},
+                {
+                    "$set": {
+                        "fact_check_status": "FAILED",
+                        "error": error_reason,
+                    }
                 },
-                "labels": {"component": "fact_check_worker", "phase": "cleanup"},
-            },
-        )
+            )
 
-    except Exception as e:
-        logger.error(
-            "Failed to mark verifications as FAILED",
-            extra={
-                "json_fields": {
+            verification_ids_str = [str(vid) for vid in verification_ids]
+            logger.info(
+                "Marked verifications as FAILED due to retry exhaustion",
+                extra={
+                    "json_fields": {
+                        "verification_count": len(verification_ids),
+                        "error_reason": error_reason,
+                        "verification_id": verification_ids_str[0]
+                        if verification_ids_str
+                        else None,
+                        "verification_ids": verification_ids_str,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_mark_failed",
+                    },
+                    "labels": {"component": "fact_check_worker", "phase": "cleanup"},
+                },
+            )
+
+            failed_span.update(
+                output={
+                    "matched_count": result.matched_count,
+                    "modified_count": result.modified_count,
+                    "success": True,
+                }
+            )
+
+        except Exception as e:
+            failed_span.update(
+                output={
                     "error": str(e),
                     "error_type": type(e).__name__,
-                    "verification_count": len(verification_ids),
-                    "error_reason": error_reason,
-                    "verification_id": verification_ids_str[0]
-                    if verification_ids_str
-                    else None,
-                    "verification_ids": verification_ids_str,
-                    "base_operation": "fact_check",
-                    "operation": "fact_check_mark_failed_error",
+                    "success": False,
+                }
+            )
+
+            logger.error(
+                "Failed to mark verifications as FAILED",
+                extra={
+                    "json_fields": {
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "verification_count": len(verification_ids),
+                        "error_reason": error_reason,
+                        "verification_id": verification_ids_str[0]
+                        if verification_ids_str
+                        else None,
+                        "verification_ids": verification_ids_str,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_mark_failed_error",
+                    },
+                    "labels": {"component": "fact_check_worker", "severity": "high"},
                 },
-                "labels": {"component": "fact_check_worker", "severity": "high"},
-            },
-            exc_info=True,
-        )
+                exc_info=True,
+            )
