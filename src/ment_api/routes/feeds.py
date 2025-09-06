@@ -78,7 +78,8 @@ GCS_BUCKET_NAME = "ment-verification"
 async def _fetch_and_update_og_preview(
     verification_id: CustomObjectId, media_url: str, media_platform: str
 ):
-    with langfuse.start_as_current_span(name="og-preview-fetch-background") as bg_span:
+    with langfuse.start_as_current_span(name="og_preview_fetch_background") as bg_span:
+        bg_span.update_trace(session_id=str(verification_id))
         bg_span.update(
             input={
                 "verification_id": str(verification_id),
@@ -173,8 +174,9 @@ async def _fetch_youtube_metadata_and_process_in_background(
     external_user_id: str,
 ):
     with langfuse.start_as_current_span(
-        name="youtube-metadata-processing-background"
+        name="youtube_metadata_processing_background"
     ) as bg_span:
+        bg_span.update_trace(session_id=str(verification_id))
         bg_span.update(
             input={
                 "verification_id": str(verification_id),
@@ -545,9 +547,7 @@ async def publish_post(
     external_user_id = request.state.supabase_user_id
     potential_verification_id = ObjectId()
 
-    with langfuse.start_as_current_span(
-        name="publish-post-for-fact-check"
-    ) as endpoint_span:
+    with langfuse.start_as_current_span(name="publish_post") as endpoint_span:
         endpoint_span.update_trace(
             user_id=external_user_id, session_id=str(potential_verification_id)
         )
@@ -658,7 +658,7 @@ async def publish_post(
 
             extracted_media = extract_social_media_url(cleaned_content)
 
-            logging.info(f"Extracted media extraction result: {extracted_media}")
+            logger.info(f"Extracted media extraction result: {extracted_media}")
 
             youtube_url = None
             initial_ai_video_summary_status = None
@@ -669,11 +669,11 @@ async def publish_post(
 
                 if media_platform == "youtube":
                     youtube_url = media_url
-                    logging.info(
+                    logger.info(
                         f"Found YouTube video: {youtube_url}. Will process metadata in background."
                     )
                 else:
-                    logging.info(
+                    logger.info(
                         f"Found social media ({media_platform}): {media_url}. Will fetch OG preview in background."
                     )
                     # For non-YouTube, social_media_info can be set if it's the primary identified link.
@@ -696,7 +696,7 @@ async def publish_post(
 
             # 5. Prepare verification document with Langfuse tracking
             with endpoint_span.start_as_current_span(
-                name="verification-document-creation"
+                name="verification_document_creation"
             ) as doc_span:
                 verification_doc = {
                     "_id": potential_verification_id,
@@ -773,65 +773,43 @@ async def publish_post(
                     SocialMediaScrapeStatus.PENDING
                 )
 
-                # Insert verification document into database with tracking
-                with doc_span.start_as_current_span(
-                    name="database-insert-verification"
-                ) as db_span:
-                    db_span.update(
-                        input={
-                            "collection": "verifications",
-                            "document_size_estimate": len(str(verification_doc)),
+                try:
+                    result = await mongo.verifications.insert_one(verification_doc)
+                    verification_id = result.inserted_id
+                    verification_doc["_id"] = verification_id
+
+                    logger.info(
+                        "Verification document inserted successfully",
+                        extra={
+                            "json_fields": {
+                                "verification_id": str(verification_id),
+                                "feed_id": str(feed_id),
+                                "operation": "verification_doc_insert",
+                            },
+                            "labels": {
+                                "component": "publish_post",
+                                "stage": "database_insert",
+                            },
                         },
-                        metadata={"operation": "mongodb_insert", "database": "mongo"},
                     )
 
-                    try:
-                        result = await mongo.verifications.insert_one(verification_doc)
-                        verification_id = result.inserted_id
-                        verification_doc["_id"] = verification_id
-
-                        db_span.update(
-                            output={
-                                "verification_id": str(verification_id),
-                                "success": True,
-                            }
-                        )
-
-                        logger.info(
-                            "Verification document inserted successfully",
-                            extra={
-                                "json_fields": {
-                                    "verification_id": str(verification_id),
-                                    "feed_id": str(feed_id),
-                                    "operation": "verification_doc_insert",
-                                },
-                                "labels": {
-                                    "component": "publish_post",
-                                    "stage": "database_insert",
-                                },
+                except Exception as db_error:
+                    logger.error(
+                        "Failed to insert verification document",
+                        extra={
+                            "json_fields": {
+                                "error_message": str(db_error),
+                                "feed_id": str(feed_id),
+                                "operation": "verification_doc_insert_error",
                             },
-                        )
-
-                    except Exception as db_error:
-                        db_span.update(
-                            output={"error": str(db_error), "success": False}
-                        )
-                        logger.error(
-                            "Failed to insert verification document",
-                            extra={
-                                "json_fields": {
-                                    "error_message": str(db_error),
-                                    "feed_id": str(feed_id),
-                                    "operation": "verification_doc_insert_error",
-                                },
-                                "labels": {
-                                    "component": "publish_post",
-                                    "stage": "database_insert",
-                                    "severity": "high",
-                                },
+                            "labels": {
+                                "component": "publish_post",
+                                "stage": "database_insert",
+                                "severity": "high",
                             },
-                        )
-                        raise
+                        },
+                    )
+                    raise
 
                 # Complete the document creation span
                 doc_span.update(
@@ -844,7 +822,7 @@ async def publish_post(
 
             # 7. Schedule background tasks that need verification_id with Langfuse tracking
             with endpoint_span.start_as_current_span(
-                name="background-tasks-scheduling"
+                name="background_tasks_scheduling"
             ) as tasks_span:
                 scheduled_tasks = []
 

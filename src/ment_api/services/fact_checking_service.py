@@ -4,7 +4,6 @@ from datetime import datetime
 from typing import Optional
 
 import httpx
-from langfuse import observe
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
@@ -14,6 +13,7 @@ from ment_api.models.fact_checking_models import (
     FactCheckRequest,
     JinaFactCheckResponse,
 )
+from ment_api.services.external_clients.langfuse_client import langfuse
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +228,6 @@ Be highly organized in your response structure
     return prompt
 
 
-@observe(as_type="generation")
 async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
     """
     Check a statement for factual accuracy using Jina AI Deep Search.
@@ -285,23 +284,52 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
             },
             "response_format": get_jina_response_format(),
         }
-        # Make a single request to Jina DeepSearch using the module-level client
-        logger.debug(
-            "Sending request to Jina DeepSearch API",
-            extra={
-                "json_fields": {
-                    "verification_id": str(request.verification_id),
-                    "model": "jina-deepsearch-v1",
-                    "timeout_seconds": 600,
-                    "base_operation": "fact_check",
-                    "operation": "jina_api_request_sent",
-                },
-                "labels": {"component": "jina_fact_checker", "phase": "api_call"},
-            },
-        )
 
-        jina_response = await jina_client.chat.completions.create(**jina_request_params)
-        response_text = json.loads(jina_response.choices[0].message.content)
+        # Make a single request to Jina DeepSearch using the module-level client with Langfuse generation tracking
+        # Note: Jina DeepSearch internally uses gemini-2.5-flash but we track it as jina-deepsearch-v1 service
+        with langfuse.start_as_current_generation(
+            name="jina_deepsearch_fact_check", model="gemini-2.5-flash"
+        ) as gen:
+            gen.update(
+                input={
+                    "prompt": fact_checking_prompt,
+                    "statement": request.details,
+                    "model_config": {
+                        "model": "gemini-2.5-flash",
+                        "service": "jina-deepsearch-v1",
+                        "budget_tokens": budget_tokens,
+                        "timeout_seconds": 600,
+                        "response_format": "structured_json",
+                    },
+                },
+                metadata={
+                    "verification_id": str(request.verification_id),
+                    "statement_length": len(request.details),
+                    "prompt_length": len(fact_checking_prompt),
+                    "budget_tokens": budget_tokens,
+                    "operation_type": "fact_check_generation",
+                    "provider": "jina_deepsearch",
+                },
+            )
+
+            logger.debug(
+                "Sending request to Jina DeepSearch API",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(request.verification_id),
+                        "model": "jina-deepsearch-v1",
+                        "timeout_seconds": 600,
+                        "base_operation": "fact_check",
+                        "operation": "jina_api_request_sent",
+                    },
+                    "labels": {"component": "jina_fact_checker", "phase": "api_call"},
+                },
+            )
+
+            jina_response = await jina_client.chat.completions.create(
+                **jina_request_params
+            )
+            response_text = json.loads(jina_response.choices[0].message.content)
 
         logger.info(
             "Jina DeepSearch API response received",
@@ -372,8 +400,42 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
                 },
             )
 
+            # Update generation with successful result and usage details
+            gen.update(
+                output={
+                    "factuality_score": fact_check_result.factuality,
+                    "reason": jina_response_parsed.reason,
+                    "reason_summary": jina_response_parsed.reason_summary,
+                    "references_count": len(fact_check_result.references),
+                    "visited_urls_count": len(fact_check_result.visited_urls),
+                    "read_urls_count": len(fact_check_result.read_urls),
+                    "success": True,
+                },
+                usage_details={
+                    "prompt_tokens": jina_response.usage.prompt_tokens
+                    if hasattr(jina_response, "usage") and jina_response.usage
+                    else None,
+                    "completion_tokens": jina_response.usage.completion_tokens
+                    if hasattr(jina_response, "usage") and jina_response.usage
+                    else None,
+                    "total_tokens": jina_response.usage.total_tokens
+                    if hasattr(jina_response, "usage") and jina_response.usage
+                    else None,
+                },
+                metadata={
+                    "factuality_score": fact_check_result.factuality,
+                    "references_count": len(fact_check_result.references),
+                    "response_length": len(jina_response.choices[0].message.content),
+                    "completion_reason": "success",
+                    "model_version": "gemini-2.5-flash",
+                    "service_version": "jina-deepsearch-v1",
+                },
+            )
+
             return fact_check_result
+
         except ValidationError as e:
+            error_msg = f"Failed to parse Jina response: {e}"
             logger.error(
                 "Failed to parse Jina response",
                 extra={
@@ -390,6 +452,16 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
                     "labels": {"component": "jina_fact_checker", "severity": "high"},
                 },
                 exc_info=True,
+            )
+
+            # Update generation with parsing error
+            gen.update(
+                output=None,
+                metadata={
+                    "error": error_msg,
+                    "raw_response": jina_response.choices[0].message.content[:500],
+                    "completion_reason": "parsing_failed",
+                },
             )
 
             logger.debug(
@@ -409,6 +481,7 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
             return None
 
     except Exception as e:
+        error_msg = f"Jina fact check failed: {e}"
         logger.error(
             "Jina fact check failed with unexpected error",
             extra={
@@ -426,4 +499,15 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
             },
             exc_info=True,
         )
+
+        # Update generation with error if it exists in scope
+        if "gen" in locals():
+            gen.update(
+                output=None,
+                metadata={
+                    "error": str(e),
+                    "completion_reason": "api_exception",
+                },
+            )
+
         return None

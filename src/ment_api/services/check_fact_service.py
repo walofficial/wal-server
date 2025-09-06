@@ -88,7 +88,6 @@ async def update_verification_status(
         raise
 
 
-@observe()
 async def check_fact(
     verification_id: CustomObjectId,
 ) -> Optional[Any]:
@@ -174,7 +173,7 @@ async def check_fact(
 
     # Create a new span for each verification processing - keep manual span for granular control
     with langfuse.start_as_current_span(
-        name="process_single_verification"
+        name="process_verification_fact_check"
     ) as verification_span:
         verification_start_time = time.time()
         user_id = verification.get("assignee_user_id")
@@ -401,12 +400,10 @@ async def check_fact(
                     },
                 )
 
-            # Create nested span for Gemini analysis within the verification processing
-            with langfuse.start_as_current_span(
-                name="gemini_fact_check_analysis"
-            ) as gemini_span:
-                gemini_span.update(
-                    input={
+            logger.info(
+                "Starting Gemini analysis for fact check validation",
+                extra={
+                    "json_fields": {
                         "verification_id": str(verification_id),
                         "statement_length": len(combined_statement),
                         "image_count": len(image_urls),
@@ -415,28 +412,37 @@ async def check_fact(
                         )
                         == "COMPLETED",
                         "has_extracted_image_text": bool(extracted_image_text),
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_gemini_start",
                     },
-                    user_id=user_id,
-                    metadata={
-                        "operation": "gemini_fact_check_analysis",
-                        "verification_id": str(verification_id),
+                    "labels": {
+                        "component": "fact_check_service",
+                        "phase": "gemini",
                     },
-                )
+                },
+            )
 
-                logger.info(
-                    "Starting Gemini analysis for fact check validation",
+            gemini_request = FactCheckInputRequest(
+                statement=combined_statement,
+                image_urls=image_urls,
+                is_social_media=verification.get("social_media_scrape_status")
+                == "COMPLETED",
+            )
+
+            gemini_client_instance = GeminiClient()
+            enhanced_input = await gemini_client_instance.get_fact_check_input(
+                gemini_request
+            )
+
+            if not enhanced_input.is_valid_for_fact_check:
+                logger.warning(
+                    "Gemini analysis determined content not valid for fact check",
                     extra={
                         "json_fields": {
                             "verification_id": str(verification_id),
-                            "statement_length": len(combined_statement),
-                            "image_count": len(image_urls),
-                            "is_social_media": verification.get(
-                                "social_media_scrape_status"
-                            )
-                            == "COMPLETED",
-                            "has_extracted_image_text": bool(extracted_image_text),
+                            "error_reason": enhanced_input.error_reason,
                             "base_operation": "fact_check",
-                            "operation": "fact_check_gemini_start",
+                            "operation": "fact_check_gemini_invalid",
                         },
                         "labels": {
                             "component": "fact_check_service",
@@ -445,120 +451,59 @@ async def check_fact(
                     },
                 )
 
-                gemini_request = FactCheckInputRequest(
-                    statement=combined_statement,
-                    image_urls=image_urls,
-                    is_social_media=verification.get("social_media_scrape_status")
-                    == "COMPLETED",
-                )
-
-                gemini_client_instance = GeminiClient()
-                enhanced_input = await gemini_client_instance.get_fact_check_input(
-                    gemini_request
-                )
-
-                if not enhanced_input.is_valid_for_fact_check:
-                    logger.warning(
-                        "Gemini analysis determined content not valid for fact check",
-                        extra={
-                            "json_fields": {
-                                "verification_id": str(verification_id),
-                                "error_reason": enhanced_input.error_reason,
-                                "base_operation": "fact_check",
-                                "operation": "fact_check_gemini_invalid",
-                            },
-                            "labels": {
-                                "component": "fact_check_service",
-                                "phase": "gemini",
-                            },
-                        },
-                    )
-
-                    # Update Gemini span with failure result
-                    gemini_span.update(
-                        output={
-                            "is_valid_for_fact_check": False,
-                            "error_reason": enhanced_input.error_reason,
-                            "status": "FAILED",
-                        },
-                        metadata={
-                            "failure_reason": "content_not_valid_for_fact_check",
-                            "error_reason": enhanced_input.error_reason,
-                        },
-                    )
-
-                    await update_verification_status(
-                        verification_id,
-                        "FAILED",
-                        {
-                            "error": enhanced_input.error_reason
-                            or "Not valid for fact check"
-                        },
-                    )
-                    if not verification.get("is_generated_news"):
-                        await send_notification(
-                            verification.get("assignee_user_id"),
-                            "ფოსტი ვერ გადამოწმდა",
-                            enhanced_input.error_reason
-                            or "არ შეიცავს გადასამოწმებელ მასალას",
-                            data={
-                                "type": "fact_check_failed",
-                                "verificationId": str(verification_id),
-                            },
-                        )
-                        await mongo.verifications.update_one(
-                            {"_id": verification_id},
-                            {"$set": {"is_public": False}},
-                        )
-                    verification_span.update(
-                        output={
-                            "status": "FAILED",
-                            "reason": "Not valid for fact check",
-                        },
-                        metadata={"error_reason": enhanced_input.error_reason},
-                    )
-                    return None
-                enhanced_statement = enhanced_input.enhanced_statement
-
-                # Update Gemini span with successful result
-                gemini_span.update(
-                    output={
-                        "enhanced_statement": enhanced_statement,
-                        "enhanced_statement_length": len(enhanced_statement),
-                        "is_valid_for_fact_check": True,
-                        "has_preview_data": bool(enhanced_input.preview_data),
-                        "status": "SUCCESS",
+                await update_verification_status(
+                    verification_id,
+                    "FAILED",
+                    {
+                        "error": enhanced_input.error_reason
+                        or "Not valid for fact check"
                     },
-                    metadata={
+                )
+                if not verification.get("is_generated_news"):
+                    await send_notification(
+                        verification.get("assignee_user_id"),
+                        "ფოსტი ვერ გადამოწმდა",
+                        enhanced_input.error_reason
+                        or "არ შეიცავს გადასამოწმებელ მასალას",
+                        data={
+                            "type": "fact_check_failed",
+                            "verificationId": str(verification_id),
+                        },
+                    )
+                    await mongo.verifications.update_one(
+                        {"_id": verification_id},
+                        {"$set": {"is_public": False}},
+                    )
+                verification_span.update(
+                    output={
+                        "status": "FAILED",
+                        "reason": "Not valid for fact check",
+                    },
+                    metadata={"error_reason": enhanced_input.error_reason},
+                )
+                return None
+            enhanced_statement = enhanced_input.enhanced_statement
+
+            logger.info(
+                "Gemini analysis completed successfully",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
                         "enhanced_statement_length": len(enhanced_statement),
-                        "original_statement_length": len(combined_statement),
+                        "has_preview_data": bool(enhanced_input.preview_data),
                         "enhancement_ratio": len(enhanced_statement)
                         / len(combined_statement)
                         if combined_statement
                         else 1,
+                        "base_operation": "fact_check",
+                        "operation": "fact_check_gemini_success",
                     },
-                )
-
-                logger.info(
-                    "Gemini analysis completed successfully",
-                    extra={
-                        "json_fields": {
-                            "verification_id": str(verification_id),
-                            "enhanced_statement_length": len(enhanced_statement),
-                            "has_preview_data": bool(enhanced_input.preview_data),
-                            "enhancement_ratio": len(enhanced_statement)
-                            / len(combined_statement)
-                            if combined_statement
-                            else 1,
-                            "base_operation": "fact_check",
-                            "operation": "fact_check_gemini_success",
-                        },
-                        "labels": {
-                            "component": "fact_check_service",
-                            "phase": "gemini",
-                        },
+                    "labels": {
+                        "component": "fact_check_service",
+                        "phase": "gemini",
                     },
-                )
+                },
+            )
         else:
             logger.warning(
                 "No content available for fact checking",

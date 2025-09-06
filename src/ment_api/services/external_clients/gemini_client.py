@@ -335,16 +335,18 @@ class GeminiClient:
                             "response_length": len(result),
                             "success": True,
                         },
-                        usage={
-                            "input": response.usage_metadata.prompt_token_count,
-                            "output": response.usage_metadata.candidates_token_count,
-                            "total": response.usage_metadata.total_token_count,
+                        usage_details={
+                            "prompt_tokens": response.usage_metadata.prompt_token_count,
+                            "completion_tokens": response.usage_metadata.candidates_token_count,
+                            "total_tokens": response.usage_metadata.total_token_count,
+                            "prompt_tokens_details": {
+                                "cached_tokens": response.usage_metadata.cached_content_token_count,
+                            },
                         },
                         metadata={
                             "response_length": len(result),
                             "completion_reason": "success",
                             "model_version": self.model_id,
-                            "cache_read_input_tokens": response.usage_metadata.cached_content_token_count,
                         },
                     )
 
@@ -609,128 +611,107 @@ class GeminiClient:
             FactCheckInputResponse object that incorporates both text and image analysis
             or None if the analysis failed
         """
-        # Create nested span for the entire fact check input analysis
-        with self.langfuse.start_as_current_span(
-            name="gemini_fact_check_input_analysis"
-        ) as analysis_span:
-            analysis_span.update(
-                input={
-                    "statement": request.statement,
-                    "image_urls": request.image_urls or [],
-                    "is_social_media": request.is_social_media,
-                    "model": "gemini-2.5-flash",
-                },
-                metadata={
-                    "operation": "fact_check_input_analysis",
+        logger.info(
+            "Starting Gemini fact check input analysis",
+            extra={
+                "json_fields": {
                     "statement_length": len(request.statement),
                     "image_count": len(request.image_urls) if request.image_urls else 0,
+                    "is_social_media": request.is_social_media,
+                    "operation": "gemini_fact_check_input_start",
                 },
-            )
-
-            logger.info(
-                "Starting Gemini fact check input analysis",
-                extra={
-                    "json_fields": {
-                        "statement_length": len(request.statement),
-                        "image_count": len(request.image_urls)
-                        if request.image_urls
-                        else 0,
-                        "is_social_media": request.is_social_media,
-                        "operation": "gemini_fact_check_input_start",
-                    },
-                    "labels": {
-                        "component": "gemini_client",
-                        "phase": "fact_check_input",
-                    },
+                "labels": {
+                    "component": "gemini_client",
+                    "phase": "fact_check_input",
                 },
-            )
+            },
+        )
 
-            # Create the system prompt
-            system_prompt = """You are a fact-checking assistant. Your task is to analyze the provided statement
+        # Create the system prompt
+        system_prompt = """You are a fact-checking assistant. Your task is to analyze the provided statement
 and images (if any) and create a comprehensive text description that captures all claims 
 that need to be fact-checked. Focus on extracting key factual claims and summarizing 
 any visual evidence from images in a way that can be verified by a text-only fact-checking system."""
 
-            # Process images if they are included in the request - nested span for image processing
-            image_objects = []
-            if request.image_urls:
-                with self.langfuse.start_as_current_span(
-                    name="image_download_processing"
-                ) as img_span:
-                    img_span.update(
-                        input={
-                            "image_urls": request.image_urls,
+        # Process images if they are included in the request - nested span for image processing
+        image_objects = []
+        if request.image_urls:
+            with self.langfuse.start_as_current_span(
+                name="image_download_processing"
+            ) as img_span:
+                img_span.update(
+                    input={
+                        "image_urls": request.image_urls,
+                        "image_count": len(request.image_urls),
+                    },
+                    metadata={"operation": "image_download_processing"},
+                )
+
+                logger.info(
+                    "Processing images for fact checking",
+                    extra={
+                        "json_fields": {
                             "image_count": len(request.image_urls),
+                            "operation": "gemini_image_download_start",
                         },
-                        metadata={"operation": "image_download_processing"},
-                    )
-
-                    logger.info(
-                        "Processing images for fact checking",
-                        extra={
-                            "json_fields": {
-                                "image_count": len(request.image_urls),
-                                "operation": "gemini_image_download_start",
-                            },
-                            "labels": {
-                                "component": "gemini_client",
-                                "phase": "image_processing",
-                            },
+                        "labels": {
+                            "component": "gemini_client",
+                            "phase": "image_processing",
                         },
-                    )
+                    },
+                )
 
-                    successful_downloads = 0
-                    for url in request.image_urls:
-                        image = await self.download_image(url)
-                        if image:
-                            image_objects.append(image)
-                            successful_downloads += 1
-                            logger.debug(
-                                "Successfully downloaded image",
-                                extra={
-                                    "json_fields": {
-                                        "image_url": url,
-                                        "operation": "gemini_image_download_success",
-                                    },
-                                    "labels": {"component": "gemini_client"},
+                successful_downloads = 0
+                for url in request.image_urls:
+                    image = await self.download_image(url)
+                    if image:
+                        image_objects.append(image)
+                        successful_downloads += 1
+                        logger.debug(
+                            "Successfully downloaded image",
+                            extra={
+                                "json_fields": {
+                                    "image_url": url,
+                                    "operation": "gemini_image_download_success",
                                 },
-                            )
-                        else:
-                            logger.warning(
-                                "Failed to download image",
-                                extra={
-                                    "json_fields": {
-                                        "image_url": url,
-                                        "operation": "gemini_image_download_failed",
-                                    },
-                                    "labels": {
-                                        "component": "gemini_client",
-                                        "severity": "medium",
-                                    },
+                                "labels": {"component": "gemini_client"},
+                            },
+                        )
+                    else:
+                        logger.warning(
+                            "Failed to download image",
+                            extra={
+                                "json_fields": {
+                                    "image_url": url,
+                                    "operation": "gemini_image_download_failed",
                                 },
-                            )
+                                "labels": {
+                                    "component": "gemini_client",
+                                    "severity": "medium",
+                                },
+                            },
+                        )
 
-                    img_span.update(
-                        output={
-                            "successful_downloads": successful_downloads,
-                            "total_requested": len(request.image_urls),
-                            "success_rate": successful_downloads
-                            / len(request.image_urls),
-                        },
-                        metadata={
-                            "download_success_rate": successful_downloads
-                            / len(request.image_urls),
-                        },
-                    )
+                img_span.update(
+                    output={
+                        "successful_downloads": successful_downloads,
+                        "total_requested": len(request.image_urls),
+                        "success_rate": successful_downloads / len(request.image_urls),
+                    },
+                    metadata={
+                        "download_success_rate": successful_downloads
+                        / len(request.image_urls),
+                    },
+                )
 
-            # Create the prompt for generating the enhanced statement
+        # Create the prompt for generating the enhanced statement
 
-            statement_text = f"Statement: {request.statement}"
-            if request.is_social_media:
-                statement_text = f"Statement extracted from scraped social media, Check the images for the statements too: {request.statement} \n"
-                statement_text += "Sometimes the scraped image provided here might not contain the statements it might just be failed scraped image screenshot, like facebook logo or some unecessary HTML screenshot just ignore it if it's useless."
+        statement_text = f"Statement: {request.statement}"
+        if request.is_social_media:
+            statement_text = f"Statement extracted from scraped social media, Check the images for the statements too: {request.statement} \n"
+            statement_text += "Sometimes the scraped image provided here might not contain the statements it might just be failed scraped image screenshot, like facebook logo or some unecessary HTML screenshot just ignore it if it's useless."
 
-            analysis_prompt = f"""
+        analysis_prompt = f"""
 Analyze the following statement and any accompanying images. Generate a comprehensive 
 text representation that captures all verifiable claims from both the text and images.
 Also generate preview data (title and description) based on the content.
@@ -755,209 +736,156 @@ Guidelines for preview data:
 Your response should include both the enhanced statement and preview data.
 """
 
-            # Build the content list, including images if available
-            contents = []
+        # Build the content list, including images if available
+        contents = []
 
-            # Add images to the content if available
-            if image_objects:
-                contents.extend(image_objects)
+        # Add images to the content if available
+        if image_objects:
+            contents.extend(image_objects)
 
-            # Add the analysis prompt
-            contents.append(analysis_prompt)
+        # Add the analysis prompt
+        contents.append(analysis_prompt)
 
-            # Create generation span for the actual Gemini API call - nested within analysis span
-            with self.langfuse.start_as_current_generation(
-                name="gemini_fact_check_generation", model="gemini-2.5-flash"
-            ) as gen:
-                gen.update(
-                    input={
-                        "prompt": analysis_prompt,
-                        "statement": request.statement,
-                        "image_count": len(image_objects),
-                        "is_social_media": request.is_social_media,
-                        "model_config": {
-                            "model": "gemini-2.5-flash",
-                            "temperature": 0.2,
-                            "response_format": "json",
-                            "thinking_budget": 3000,
-                        },
+        # Create generation span for the actual Gemini API call - nested within analysis span
+        with self.langfuse.start_as_current_generation(
+            name="gemini_fact_check_input_generation", model="gemini-2.5-flash"
+        ) as gen:
+            gen.update(
+                input={
+                    "system_prompt": system_prompt,
+                    "prompt": analysis_prompt,
+                    "statement": request.statement,
+                    "image_count": len(image_objects),
+                    "is_social_media": request.is_social_media,
+                    "model_config": {
+                        "model": "gemini-2.5-flash",
+                        "temperature": 0.2,
+                        "response_format": "json",
+                        "thinking_budget": 3000,
                     },
-                    metadata={
+                },
+                metadata={
+                    "statement_length": len(request.statement),
+                    "image_url_count": len(request.image_urls)
+                    if request.image_urls
+                    else 0,
+                    "successful_image_downloads": len(image_objects),
+                    "is_social_media": request.is_social_media,
+                    "operation_type": "fact_check_input_generation",
+                    "response_format": "structured_json",
+                },
+            )
+
+            logger.info(
+                "Starting Gemini fact check input generation",
+                extra={
+                    "json_fields": {
                         "statement_length": len(request.statement),
-                        "image_url_count": len(request.image_urls)
-                        if request.image_urls
-                        else 0,
-                        "successful_image_downloads": len(image_objects),
-                        "is_social_media": request.is_social_media,
-                        "operation_type": "fact_check_input_generation",
-                        "response_format": "structured_json",
+                        "image_count": len(image_objects),
+                        "model": "gemini-2.5-flash",
+                        "temperature": 0.2,
+                        "operation": "gemini_fact_check_generation_start",
                     },
+                    "labels": {"component": "gemini_client", "phase": "generation"},
+                },
+            )
+
+            # Generate the enhanced statement using the new response schema
+            config = GenerateContentConfig(
+                system_instruction=system_prompt,
+                response_mime_type="application/json",
+                response_schema=FactCheckInputResponse.model_json_schema(),
+                temperature=0.2,
+                thinking_config=ThinkingConfig(
+                    thinking_budget=3000,
+                ),
+            )
+
+            try:
+                response = await gemini_client.aio.models.generate_content(
+                    model="gemini-2.5-flash",
+                    config=config,
+                    contents=contents,
                 )
 
-                logger.info(
-                    "Starting Gemini fact check input generation",
-                    extra={
-                        "json_fields": {
-                            "statement_length": len(request.statement),
-                            "image_count": len(image_objects),
-                            "model": "gemini-2.5-flash",
-                            "temperature": 0.2,
-                            "operation": "gemini_fact_check_generation_start",
-                        },
-                        "labels": {"component": "gemini_client", "phase": "generation"},
-                    },
-                )
-
-                # Generate the enhanced statement using the new response schema
-                config = GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    response_mime_type="application/json",
-                    response_schema=FactCheckInputResponse.model_json_schema(),
-                    temperature=0.2,
-                    thinking_config=ThinkingConfig(
-                        thinking_budget=3000,
-                    ),
-                )
+                if not response or not response.text:
+                    if (
+                        response.prompt_feedback.block_reason
+                        == BlockedReason.PROHIBITED_CONTENT
+                    ):
+                        return FactCheckInputResponse(
+                            enhanced_statement="",
+                            is_valid_for_fact_check=False,
+                            error_reason="Prohibited content",
+                        )
+                    error_msg = "Empty response when generating enhanced statement"
+                    logger.error(error_msg)
+                    gen.update(output=None, metadata={"error": error_msg})
+                    raise Exception(error_msg)
 
                 try:
-                    response = await gemini_client.aio.models.generate_content(
-                        model="gemini-2.5-flash",
-                        config=config,
-                        contents=contents,
+                    result = FactCheckInputResponse.model_validate_json(response.text)
+
+                    # Enhanced output tracking with comprehensive details
+                    gen.update(
+                        output={
+                            "enhanced_statement": result.enhanced_statement,
+                            "is_valid_for_fact_check": result.is_valid_for_fact_check,
+                            "has_preview_data": result.preview_data is not None,
+                            "success": True,
+                        },
+                        usage_details={
+                            "prompt_tokens": response.usage_metadata.prompt_token_count,
+                            "completion_tokens": response.usage_metadata.candidates_token_count,
+                            "total_tokens": response.usage_metadata.total_token_count,
+                            "prompt_tokens_details": {
+                                "cached_tokens": response.usage_metadata.cached_content_token_count,
+                            },
+                        },
+                        metadata={
+                            "enhanced_statement_length": len(result.enhanced_statement),
+                            "is_valid_for_fact_check": result.is_valid_for_fact_check,
+                            "has_preview_data": result.preview_data is not None,
+                            "completion_reason": "success",
+                            "model_version": "gemini-2.5-flash",
+                        },
                     )
-                    print(response)
 
-                    if not response or not response.text:
-                        if (
-                            response.prompt_feedback.block_reason
-                            == BlockedReason.PROHIBITED_CONTENT
-                        ):
-                            return FactCheckInputResponse(
-                                enhanced_statement="",
-                                is_valid_for_fact_check=False,
-                                error_reason="Prohibited content",
-                            )
-                        error_msg = "Empty response when generating enhanced statement"
-                        logger.error(error_msg)
-                        gen.update(output=None, metadata={"error": error_msg})
-                        raise Exception(error_msg)
-
-                    try:
-                        result = FactCheckInputResponse.model_validate_json(
-                            response.text
-                        )
-
-                        # Enhanced output tracking with comprehensive details
-                        gen.update(
-                            output={
-                                "enhanced_statement": result.enhanced_statement,
-                                "is_valid_for_fact_check": result.is_valid_for_fact_check,
-                                "has_preview_data": result.preview_data is not None,
-                                "success": True,
-                            },
-                            usage={
-                                "input": response.usage_metadata.prompt_token_count,
-                                "output": response.usage_metadata.candidates_token_count,
-                                "total": response.usage_metadata.total_token_count,
-                            },
-                            metadata={
+                    logger.info(
+                        "Gemini fact check input generation completed successfully",
+                        extra={
+                            "json_fields": {
                                 "enhanced_statement_length": len(
                                     result.enhanced_statement
                                 ),
                                 "is_valid_for_fact_check": result.is_valid_for_fact_check,
                                 "has_preview_data": result.preview_data is not None,
-                                "completion_reason": "success",
-                                "model_version": "gemini-2.5-flash",
-                                "cache_read_input_tokens": response.usage_metadata.cached_content_token_count,
+                                "input_tokens": response.usage_metadata.prompt_token_count,
+                                "output_tokens": response.usage_metadata.candidates_token_count,
+                                "total_tokens": response.usage_metadata.total_token_count,
+                                "operation": "gemini_fact_check_generation_success",
                             },
-                        )
+                            "labels": {
+                                "component": "gemini_client",
+                                "phase": "generation",
+                            },
+                        },
+                    )
 
-                        logger.info(
-                            "Gemini fact check input generation completed successfully",
-                            extra={
-                                "json_fields": {
-                                    "enhanced_statement_length": len(
-                                        result.enhanced_statement
-                                    ),
-                                    "is_valid_for_fact_check": result.is_valid_for_fact_check,
-                                    "has_preview_data": result.preview_data is not None,
-                                    "input_tokens": response.usage_metadata.prompt_token_count,
-                                    "output_tokens": response.usage_metadata.candidates_token_count,
-                                    "total_tokens": response.usage_metadata.total_token_count,
-                                    "operation": "gemini_fact_check_generation_success",
-                                },
-                                "labels": {
-                                    "component": "gemini_client",
-                                    "phase": "generation",
-                                },
-                            },
-                        )
-
-                        # Update the analysis span with final results
-                        analysis_span.update(
-                            output={
-                                "enhanced_statement": result.enhanced_statement,
-                                "is_valid_for_fact_check": result.is_valid_for_fact_check,
-                                "has_preview_data": result.preview_data is not None,
-                                "image_processing_success": len(image_objects) > 0
-                                if request.image_urls
-                                else True,
-                            },
-                            metadata={
-                                "total_tokens_used": response.usage_metadata.total_token_count,
-                                "processing_success": True,
-                            },
-                        )
-
-                        return result
-
-                    except Exception as e:
-                        error_msg = f"Failed to parse FactCheckInputResponse: {e}"
-                        logger.error(
-                            "Gemini fact check input generation failed - parsing error",
-                            extra={
-                                "json_fields": {
-                                    "error": str(e),
-                                    "error_type": type(e).__name__,
-                                    "raw_response_preview": response.text[:200]
-                                    if response.text
-                                    else None,
-                                    "operation": "gemini_fact_check_generation_parse_error",
-                                },
-                                "labels": {
-                                    "component": "gemini_client",
-                                    "severity": "high",
-                                },
-                            },
-                        )
-                        gen.update(
-                            output=None,
-                            metadata={
-                                "error": error_msg,
-                                "raw_response": response.text[:500]
-                                if response.text
-                                else None,
-                                "completion_reason": "parsing_failed",
-                            },
-                        )
-                        analysis_span.update(
-                            output=None,
-                            metadata={
-                                "error": error_msg,
-                                "processing_success": False,
-                            },
-                        )
-                        raise e
+                    return result
 
                 except Exception as e:
-                    error_msg = f"Gemini API call failed: {e}"
+                    error_msg = f"Failed to parse FactCheckInputResponse: {e}"
                     logger.error(
-                        "Gemini fact check input generation failed with exception",
+                        "Gemini fact check input generation failed - parsing error",
                         extra={
                             "json_fields": {
                                 "error": str(e),
                                 "error_type": type(e).__name__,
-                                "operation": "gemini_fact_check_generation_exception",
+                                "raw_response_preview": response.text[:200]
+                                if response.text
+                                else None,
+                                "operation": "gemini_fact_check_generation_parse_error",
                             },
                             "labels": {
                                 "component": "gemini_client",
@@ -968,18 +896,39 @@ Your response should include both the enhanced statement and preview data.
                     gen.update(
                         output=None,
                         metadata={
-                            "error": str(e),
-                            "completion_reason": "api_exception",
-                        },
-                    )
-                    analysis_span.update(
-                        output=None,
-                        metadata={
                             "error": error_msg,
-                            "processing_success": False,
+                            "raw_response": response.text[:500]
+                            if response.text
+                            else None,
+                            "completion_reason": "parsing_failed",
                         },
                     )
                     raise e
+
+            except Exception as e:
+                error_msg = f"Gemini API call failed: {e}"
+                logger.error(
+                    "Gemini fact check input generation failed with exception",
+                    extra={
+                        "json_fields": {
+                            "error": str(e),
+                            "error_type": type(e).__name__,
+                            "operation": "gemini_fact_check_generation_exception",
+                        },
+                        "labels": {
+                            "component": "gemini_client",
+                            "severity": "high",
+                        },
+                    },
+                )
+                gen.update(
+                    output=None,
+                    metadata={
+                        "error": str(e),
+                        "completion_reason": "api_exception",
+                    },
+                )
+                raise e
 
     @observe()
     @retry(
@@ -1231,17 +1180,19 @@ Please follow the thinking process and generate the notification according to th
 
                 # Enhanced usage tracking
                 gen.update(
-                    usage={
-                        "input": response.usage_metadata.prompt_token_count,
-                        "output": response.usage_metadata.candidates_token_count,
-                        "total": response.usage_metadata.total_token_count,
+                    usage_details={
+                        "prompt_tokens": response.usage_metadata.prompt_token_count,
+                        "completion_tokens": response.usage_metadata.candidates_token_count,
+                        "total_tokens": response.usage_metadata.total_token_count,
+                        "prompt_tokens_details": {
+                            "cached_tokens": response.usage_metadata.cached_content_token_count,
+                        },
                     },
                     metadata={
                         "model_version": "gemini-2.5-flash",
                         "completion_reason": "success"
                         if response and response.text
                         else "empty_response",
-                        "cache_read_input_tokens": response.usage_metadata.cached_content_token_count,
                     },
                 )
 

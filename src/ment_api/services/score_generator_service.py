@@ -2,7 +2,6 @@ import logging
 
 from google.genai import Client
 from google.genai.types import GenerateContentConfig, ThinkingConfig
-from langfuse import observe
 from tenacity import (
     before_sleep_log,
     retry,
@@ -233,7 +232,6 @@ Preliminary score: 1/20 - The article is demonstrably inaccurate on its key poin
 """
 
 
-@observe(as_type="generation")
 @retry(
     wait=wait_random_exponential(multiplier=1, max=3),
     before_sleep=before_sleep_log(logger, logging.WARNING),
@@ -275,52 +273,131 @@ async def generate_score(
         },
     )
 
-    # Enhanced input tracking for score generation
-    langfuse.update_current_generation(
-        input={
-            "article_statements": article_statements,
-            "fact_check_reason": fact_check_reason,
-            "prompt_template": "score_generation_with_examples",
-            "model_config": {
-                "model": "gemini-2.5-flash-lite",
-                "response_format": "json",
-                "thinking_budget": 5000,
-                "temperature": None,  # Default temperature
+    # # Enhanced input tracking for score generation
+    # langfuse.update_current_generation(
+    #     input={
+    #         "article_statements": article_statements,
+    #         "fact_check_reason": fact_check_reason,
+    #         "prompt_template": "score_generation_with_examples",
+    #         "model_config": {
+    #             "model": "gemini-2.5-flash-lite",
+    #             "response_format": "json",
+    #             "thinking_budget": 5000,
+    #             "temperature": None,  # Default temperature
+    #         },
+    #     },
+    #     metadata={
+    #         "article_statements_length": len(article_statements),
+    #         "fact_check_reason_length": len(fact_check_reason),
+    #         "prompt_length": len(generate_score_user_prompt),
+    #         "examples_included": True,
+    #         "operation_type": "score_generation",
+    #         "response_format": "structured_json",
+    #     },
+    # )
+
+    with langfuse.start_as_current_generation(
+        name="gemini_score_generation", model="gemini-2.5-flash-lite"
+    ) as gen:
+        gen.update(
+            input={
+                "contents": [generate_score_user_prompt, examples_prompt],
+                "system_prompt": system_prompt,
+                "model_config": {
+                    "model": "gemini-2.5-flash-lite",
+                    "response_format": "json",
+                    "thinking_budget": 5000,
+                    "temperature": None,
+                },
             },
-        },
-        metadata={
-            "article_statements_length": len(article_statements),
-            "fact_check_reason_length": len(fact_check_reason),
-            "prompt_length": len(generate_score_user_prompt),
-            "examples_included": True,
-            "operation_type": "score_generation",
-            "response_format": "structured_json",
-        },
-    )
-
-    try:
-        response = await client.aio.models.generate_content(
-            model="gemini-2.5-flash-lite",
-            config=GenerateContentConfig(
-                system_instruction=system_prompt,
-                response_mime_type="application/json",
-                response_schema=GenerateScoreResponse.model_json_schema(),
-                thinking_config=ThinkingConfig(
-                    thinking_budget=5000,
-                ),
-            ),
-            contents=[generate_score_user_prompt, examples_prompt],
         )
+        try:
+            response = await client.aio.models.generate_content(
+                model="gemini-2.5-flash-lite",
+                config=GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    response_mime_type="application/json",
+                    response_schema=GenerateScoreResponse.model_json_schema(),
+                    thinking_config=ThinkingConfig(
+                        thinking_budget=5000,
+                    ),
+                ),
+                contents=[generate_score_user_prompt, examples_prompt],
+            )
 
-        if not response or not response.text:
-            error_msg = "Empty response from Gemini during score generation"
-            logger.error(
-                "Score generation failed - empty response",
+            if not response or not response.text:
+                error_msg = "Empty response from Gemini during score generation"
+                logger.error(
+                    "Score generation failed - empty response",
+                    extra={
+                        "json_fields": {
+                            "error": error_msg,
+                            "model": "gemini-2.5-flash-lite",
+                            "operation": "gemini_score_generation_empty_response",
+                        },
+                        "labels": {
+                            "component": "score_generator_service",
+                            "severity": "high",
+                        },
+                    },
+                )
+                raise Exception(error_msg)
+
+            # Parse the response
+            result = GenerateScoreResponse.model_validate_json(response.text)
+
+            gen.update(
+                output={
+                    "score": result.score,
+                    "justification": result.justification,
+                    "reasoning": result.reasoning,
+                },
+                usage_details={
+                    "prompt_tokens": response.usage_metadata.prompt_token_count,
+                    "completion_tokens": response.usage_metadata.candidates_token_count,
+                    "total_tokens": response.usage_metadata.total_token_count,
+                    "prompt_tokens_details": {
+                        "cached_tokens": response.usage_metadata.cached_content_token_count,
+                    },
+                },
+            )
+
+            logger.info(
+                "Score generation completed successfully",
                 extra={
                     "json_fields": {
-                        "error": error_msg,
+                        "score": result.score,
+                        "score_range": "high"
+                        if result.score >= 70
+                        else "medium"
+                        if result.score >= 40
+                        else "low",
+                        "justification_length": len(result.justification),
+                        "reasoning_length": len(result.reasoning),
+                        "input_tokens": response.usage_metadata.prompt_token_count,
+                        "output_tokens": response.usage_metadata.candidates_token_count,
+                        "total_tokens": response.usage_metadata.total_token_count,
+                        "operation": "gemini_score_generation_success",
+                    },
+                    "labels": {
+                        "component": "score_generator_service",
+                        "phase": "generation",
+                    },
+                },
+            )
+
+            return result
+
+        except Exception as e:
+            error_msg = f"Score generation failed: {e}"
+            logger.error(
+                "Score generation failed with exception",
+                extra={
+                    "json_fields": {
+                        "error": str(e),
+                        "error_type": type(e).__name__,
                         "model": "gemini-2.5-flash-lite",
-                        "operation": "gemini_score_generation_empty_response",
+                        "operation": "gemini_score_generation_exception",
                     },
                     "labels": {
                         "component": "score_generator_service",
@@ -328,89 +405,16 @@ async def generate_score(
                     },
                 },
             )
-            raise Exception(error_msg)
 
-        # Parse the response
-        result = GenerateScoreResponse.model_validate_json(response.text)
-
-        # Enhanced output tracking with comprehensive details
-        langfuse.update_current_generation(
-            output={
-                "score": result.score,
-                "justification": result.justification,
-                "reasoning": result.reasoning,
-                "justification_length": len(result.justification),
-                "reasoning_length": len(result.reasoning),
-                "success": True,
-            },
-            usage={
-                "input": response.usage_metadata.prompt_token_count,
-                "output": response.usage_metadata.candidates_token_count,
-                "total": response.usage_metadata.total_token_count,
-            },
-            metadata={
-                "score_value": result.score,
-                "score_range": "high"
-                if result.score >= 70
-                else "medium"
-                if result.score >= 40
-                else "low",
-                "justification_length": len(result.justification),
-                "reasoning_length": len(result.reasoning),
-                "completion_reason": "success",
-                "model_version": "gemini-2.5-flash-lite",
-                "cache_read_input_tokens": response.usage_metadata.cached_content_token_count,
-            },
-        )
-
-        logger.info(
-            "Score generation completed successfully",
-            extra={
-                "json_fields": {
-                    "score": result.score,
-                    "score_range": "high"
-                    if result.score >= 70
-                    else "medium"
-                    if result.score >= 40
-                    else "low",
-                    "justification_length": len(result.justification),
-                    "reasoning_length": len(result.reasoning),
-                    "input_tokens": response.usage_metadata.prompt_token_count,
-                    "output_tokens": response.usage_metadata.candidates_token_count,
-                    "total_tokens": response.usage_metadata.total_token_count,
-                    "operation": "gemini_score_generation_success",
-                },
-                "labels": {
-                    "component": "score_generator_service",
-                    "phase": "generation",
-                },
-            },
-        )
-
-        return result
-
-    except Exception as e:
-        error_msg = f"Score generation failed: {e}"
-        logger.error(
-            "Score generation failed with exception",
-            extra={
-                "json_fields": {
-                    "error": str(e),
-                    "error_type": type(e).__name__,
+            # Update generation with error information
+            gen.update(
+                output=None,
+                metadata={
+                    "error": error_msg,
+                    "completion_reason": "exception",
                     "model": "gemini-2.5-flash-lite",
                     "operation": "gemini_score_generation_exception",
                 },
-                "labels": {"component": "score_generator_service", "severity": "high"},
-            },
-        )
+            )
 
-        # Update generation with error information
-        langfuse.update_current_generation(
-            output=None,
-            metadata={
-                "error": str(e),
-                "completion_reason": "exception",
-            },
-        )
-
-        raise
+            raise
