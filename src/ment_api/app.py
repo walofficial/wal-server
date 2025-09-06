@@ -1,5 +1,5 @@
 import logging
-import asyncio
+
 import jwt
 import socketio
 from fastapi import FastAPI, Request
@@ -162,6 +162,7 @@ async def get_country(request: Request):
         ip_address=ip,
         detection_method=method,
     )
+
 
 def get_ip_detection_method(request: Request, detected_ip: str) -> str:
     # Backward-compat shim: delegate to country_service for consistent naming

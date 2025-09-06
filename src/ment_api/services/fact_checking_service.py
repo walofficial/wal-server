@@ -5,24 +5,14 @@ from typing import Optional
 
 import httpx
 from langfuse import observe
-from langfuse.api.resources.ingestion.types import usage_details
 from openai import AsyncOpenAI
 from pydantic import ValidationError
-from ment_api.services.external_clients.langfuse_client import (
-    langfuse,
-)
-from google.genai.types import GenerateContentConfig, Part, ThinkingConfig
+
 from ment_api.configurations.config import settings
 from ment_api.models.fact_checking_models import (
     FactCheckingResult,
     FactCheckRequest,
     JinaFactCheckResponse,
-)
-from ment_api.services.external_clients.gemini_client import gemini_client
-from groq import AsyncGroq
-
-client = AsyncGroq(
-    default_headers={"Groq-Model-Version": "latest"}, api_key=settings.groq_key
 )
 
 logger = logging.getLogger(__name__)
@@ -93,64 +83,24 @@ def get_jina_response_format():
     schema = JinaFactCheckResponse.model_json_schema()
 
     # Remove $defs and inline the FactCheckingReference definition
-    return """{
-    "type": "object",
-    "properties": {
-      "factuality": {
-        "type": "number",
-        "description": "Output a numerical score between 0.0 and 1.0 representing the factuality of the news article. This score will be shown to users to indicate how factual the article is. Adhere to the following interpretation: 0.9-1.0 signifies highly factual (well-supported by multiple reliable sources); 0.7-0.9 signifies mostly factual (with minor uncertainties); 0.4-0.7 signifies partially factual (with significant uncertainties); and 0.0-0.4 signifies mostly false or unverifiable."
-      },
-      "reason": {
-        "type": "string",
-        "description": "Structured fact-check explanation formatted with specific sections. Use this exact format with proper line breaks:\n\n## სიმართლე\n- [bullet point for true claim]\n- [bullet point for true claim]\n\n[One paragraph explaining evidence why these claims are true]\n\n## ტყუილი\n- [bullet point for false claim]\n- [bullet point for false claim]\n\n[One paragraph explaining evidence why these claims are false]\n\n## გადაუმოწმებელი\n- [bullet point for unverifiable claim]\n\n[One paragraph explaining why these cannot be verified]\n\nOnly include sections that have content. Use '-' for bullet points. Keep bullet points short and digestible."
-      },
-      "score_justification": {
-        "type": "string",
-        "description": "Comprehensive English analysis providing detailed reasoning behind the factuality score. This should be even more thorough than the reason field, explaining: the methodology used for evaluation, specific evidence weighting, source credibility assessment, logical reasoning process, and complete justification for the numerical score assigned. Be extremely detailed and analytical."
-      },
-      "reason_summary": {
-        "type": "string",
-        "description": "A concise fact-check summary, formatted as raw markdown (no code blocks). This summary appears directly under articles alongside the factuality score and must be optimized for users with short attention spans. Requirements: Maximum 2-3 short sentences total (not paragraphs); Lead with the most important finding first; Use simple, direct language that an average reader can scan quickly; Structure: Present findings in order of impact using this priority: a) If false information is present, start with it; b) Then include unverifiable claims if applicable; c) End with any validated claims if present."
-      },
-      "references": {
-        "type": "array",
-        "description": "List of reference objects supporting the fact check, where each object has a url, source_title, key_quote, and is_supportive",
-        "items": {
-          "type": "object",
-          "properties": {
-            "url": {
-              "type": "string",
-              "description": "URL of the reference source"
-            },
-            "source_title": {
-              "type": "string",
-              "description": "Title of the reference source"
-            },
-            "key_quote": {
-              "type": "string",
-              "description": "Key quote from the source supporting the fact check"
-            },
-            "is_supportive": {
-              "type": "boolean",
-              "description": "Whether the reference supports or refutes the statement"
-            }
-          },
-          "required": [
-            "url",
-            "key_quote",
-            "is_supportive"
-          ]
-        }
-      }
-    },
-    "required": [
-      "factuality",
-      "reason",
-      "score_justification",
-      "reason_summary"
-      "references"
-    ]
-  }"""
+    has_defs = "$defs" in schema
+    if has_defs:
+        # Get the FactCheckingReference definition
+        fact_checking_ref_def = schema["$defs"].get("FactCheckingReference", {})
+
+        # Update the references property to use the inline definition
+        if "properties" in schema and "references" in schema["properties"]:
+            schema["properties"]["references"]["items"] = fact_checking_ref_def
+
+        # Remove $defs
+        del schema["$defs"]
+
+    response_format = {
+        "type": "object",
+        "title": schema.get("title", "JinaFactCheckResponse"),
+        "properties": schema.get("properties", {}),
+        "required": schema.get("required", []),
+    }
 
     logger.debug(
         "Jina response format schema generated",
@@ -186,9 +136,8 @@ def create_fact_checking_prompt(details: str) -> str:
         },
     )
     prompt = f"""
-    The current date is: {current_date} 
-
-    Before you start the fact checking process, make sure to gather all the real time information you need for the persons, places, events, etc. that are mentioned in the post details. For example someone might have become a president or something today or someone made a statement maybe make sure to gather information from search instead of use training data
+    The current date is: {current_date}
+    You are an expert fact-checker tasked with thoroughly analyzing the following post details. Follow the step-by-step process below to ensure accuracy and completeness. 
 
     <details>
 {details}
@@ -218,7 +167,7 @@ Avoid bullet point repetition: Expand with NEW information that supports/contrad
 Progressive information: Each sentence should add new value, not repeat previous points
 Multiple source corroboration: Show how different sources align or conflict
 Logical flow: Evidence should build from strongest to supporting details
-Write for average readers but include precise factual details
+Georgian clarity: Write for average readers but include precise factual details
 CRITICAL REQUIREMENTS:
 
 If a section has NO bullet points, DO NOT include that section AT ALL
@@ -232,36 +181,35 @@ Source credibility analysis
 Logical reasoning process step-by-step
 Complete justification for the numerical score assigned
 Be extremely detailed and analytical
-Concise fact-check summary, formatted as raw markdown. Optimized for users with short attention spans:
+Georgian User Summary
+Concise fact-check summary in Georgian, formatted as raw markdown. Optimized for users with short attention spans:
 
 Requirements:
 
 Maximum 2-3 short sentences total (not paragraphs)
 Lead with most important finding first
 Use simple, direct language for quick scanning
+Priority structure: a) False information: "მტკიცება მცდარია:" or "ინფორმაცია არასწორია:" + brief reason (max 15 words) b) Verified true information: "თუმცა, სწორია, რომ..." or "ინფორმაცია სწორია:" + reason (max 15 words)
+c) Unverifiable claims: "ვერ გადამოწმდა..." or "გადაუმოწმებელია..." + specific claim (max 10 words)
 Skip categories with no significant findings
 Use active voice and specific terms
 Write for 3-second comprehension
 Avoid technical jargon or complex sentences
-
 References
 Provide references with:
+
 URLs to sources
 Source titles
 Key quotes in original language
 Clear indication of whether each source supports or contradicts the post details
-
 Quality standards:
+
 You are working with a highly experienced analyst - be detailed and thorough
 Accuracy is critical - mistakes erode trust
 Value strong arguments over source authority alone
 Consider new technologies and contrarian ideas, not just conventional wisdom
 Use high levels of speculation or prediction when appropriate, but clearly flag it
 Be highly organized in your response structure
-
-You might need sometimes to search Georgian keywords in query as most of the news are in Georgian language
-
-Try to provide more than 6 references and increase it as you find more information.
 """
 
     logger.debug(
@@ -325,38 +273,53 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
             },
         )
 
-        completion = await client.chat.completions.create(
-            model="groq/compound",
-            messages=[
-                {
-                    "role": "system",
-                    "content": " You are an expert fact-checker tasked with thoroughly analyzing the following post details. Follow the step-by-step process below to ensure accuracy and completeness. \n",
-                },
+        jina_request_params = {
+            "model": "jina-deepsearch-v1",
+            "messages": [
                 {"role": "user", "content": fact_checking_prompt},
             ],
-            temperature=1,
-            max_completion_tokens=6000,
-            top_p=1,
-            stream=False,
-            stop=None,
-            compound_custom={
-                "tools": {
-                    "enabled_tools": ["web_search", "browser_automation","visit_website"]
-                }
+            "timeout": httpx.Timeout(60 * 10.0),
+            "extra_body": {
+                "budget_tokens": budget_tokens,
+                "verification_id": str(request.verification_id),
             },
-            search_settings={
-                "country": "georgia",
-            }
+            "response_format": get_jina_response_format(),
+        }
+        # Make a single request to Jina DeepSearch using the module-level client
+        logger.debug(
+            "Sending request to Jina DeepSearch API",
+            extra={
+                "json_fields": {
+                    "verification_id": str(request.verification_id),
+                    "model": "jina-deepsearch-v1",
+                    "timeout_seconds": 600,
+                    "base_operation": "fact_check",
+                    "operation": "jina_api_request_sent",
+                },
+                "labels": {"component": "jina_fact_checker", "phase": "api_call"},
+            },
         )
-        
-        response_text = completion.choices[0].message.content
 
-        response_json = await generate_json_from_fact_check_response(response_text)
+        jina_response = await jina_client.chat.completions.create(**jina_request_params)
+        response_text = json.loads(jina_response.choices[0].message.content)
 
+        logger.info(
+            "Jina DeepSearch API response received",
+            extra={
+                "json_fields": {
+                    "verification_id": str(request.verification_id),
+                    "response_length": len(jina_response.choices[0].message.content),
+                    "has_response": bool(response_text),
+                    "base_operation": "fact_check",
+                    "operation": "jina_api_response_received",
+                },
+                "labels": {"component": "jina_fact_checker", "phase": "api_call"},
+            },
+        )
 
         try:
             jina_response_parsed: JinaFactCheckResponse = (
-                JinaFactCheckResponse.model_validate(response_json)
+                JinaFactCheckResponse.model_validate(response_text)
             )
 
             logger.info(
@@ -381,12 +344,17 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
                 score_justification=jina_response_parsed.score_justification,
                 reason_summary=jina_response_parsed.reason_summary,
                 references=jina_response_parsed.references,
-                visited_urls=([]),
-                read_urls=([]),
+                visited_urls=(
+                    jina_response.model_extra.get("visitedURLs", [])
+                    if hasattr(jina_response, "model_extra")
+                    else []
+                ),
+                read_urls=(
+                    jina_response.model_extra.get("readURLs", [])
+                    if hasattr(jina_response, "model_extra")
+                    else []
+                ),
             )
-            return fact_check_result
-        except ValidationError as e:
-            error_msg = f"Failed to deserialize Jina response: {str(e)}. Original content: {completion.choices[0].message.content}"
 
             logger.info(
                 "Jina fact check completed successfully",
@@ -414,7 +382,7 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
                         "error": str(e),
                         "error_type": "ValidationError",
                         "response_content_length": len(
-                            completion.choices[0].message.content
+                            jina_response.choices[0].message.content
                         ),
                         "base_operation": "fact_check",
                         "operation": "jina_response_parse_error",
@@ -429,7 +397,7 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
                 extra={
                     "json_fields": {
                         "verification_id": str(request.verification_id),
-                        "response_content": completion.choices[0].message.content[
+                        "response_content": jina_response.choices[0].message.content[
                             :500
                         ],  # First 500 chars for debugging
                         "base_operation": "fact_check",
@@ -459,43 +427,3 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
             exc_info=True,
         )
         return None
-
-
-@observe(as_type="generation")
-async def generate_json_from_fact_check_response(
-    response_text: str,
-) -> Optional[str]:
-    contents = [
-        "Return JSON from this markdown response:" + response_text
-    ]
-
-    langfuse.update_current_generation(
-        input=contents,
-        model="gemini-2.5-flash",
-        metadata={
-            "response_text_length": len(response_text),
-        },
-    )
-    response_json = await gemini_client.aio.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=contents,
-        config=GenerateContentConfig(
-            response_mime_type="application/json",
-            max_output_tokens=8000,
-            thinking_config=ThinkingConfig(
-                thinking_budget=1000,
-            ),
-            system_instruction="You are an expert JSON generator tasked with generating a JSON from the provided markdown response.",
-            response_schema=JinaFactCheckResponse.model_json_schema(),
-        ),
-    )
-
-    langfuse.update_current_generation(
-        usage_details={
-            "input": response_json.usage_metadata.prompt_token_count,
-            "output": response_json.usage_metadata.candidates_token_count,
-            "cache_read_input_tokens": response_json.usage_metadata.cached_content_token_count,
-        },
-    )
-
-    return response_json.parsed
