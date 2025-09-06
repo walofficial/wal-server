@@ -3,16 +3,16 @@ import logging
 from google.genai import Client
 from google.genai.types import GenerateContentConfig, ThinkingConfig
 from langfuse import observe
-from ment_api.services.external_clients.langfuse_client import (
-    langfuse,
-)
 from tenacity import (
     before_sleep_log,
     retry,
-    wait_random_exponential,
     stop_after_attempt,
+    wait_random_exponential,
 )
 
+from ment_api.services.external_clients.langfuse_client import (
+    langfuse,
+)
 from ment_api.services.models.score_generator_service.generate_score_response import (
     GenerateScoreResponse,
 )
@@ -245,39 +245,172 @@ async def generate_score(
     article_statements: str,
     fact_check_reason: str,
 ) -> GenerateScoreResponse:
+    """
+    Generate an importance score for fact-checked content using Gemini.
+    Enhanced with comprehensive Langfuse observability for generation tracking.
+
+    Args:
+        client: Gemini client instance
+        article_statements: The enhanced statement from fact check input
+        fact_check_reason: The reason from the fact check result
+
+    Returns:
+        GenerateScoreResponse with score, reasoning, and justification
+    """
     generate_score_user_prompt = user_prompt_template.format(
         article_statements=article_statements,
         fact_check_reason=fact_check_reason,
     )
 
+    logger.info(
+        "Starting score generation with Gemini",
+        extra={
+            "json_fields": {
+                "article_statements_length": len(article_statements),
+                "fact_check_reason_length": len(fact_check_reason),
+                "model": "gemini-2.5-flash-lite",
+                "operation": "gemini_score_generation_start",
+            },
+            "labels": {"component": "score_generator_service", "phase": "generation"},
+        },
+    )
+
+    # Enhanced input tracking for score generation
     langfuse.update_current_generation(
-        input=[generate_score_user_prompt, examples_prompt],
-        model="gemini-2.5-flash-lite",
+        input={
+            "article_statements": article_statements,
+            "fact_check_reason": fact_check_reason,
+            "prompt_template": "score_generation_with_examples",
+            "model_config": {
+                "model": "gemini-2.5-flash-lite",
+                "response_format": "json",
+                "thinking_budget": 5000,
+                "temperature": None,  # Default temperature
+            },
+        },
         metadata={
             "article_statements_length": len(article_statements),
             "fact_check_reason_length": len(fact_check_reason),
+            "prompt_length": len(generate_score_user_prompt),
+            "examples_included": True,
+            "operation_type": "score_generation",
+            "response_format": "structured_json",
         },
     )
 
-    response = await client.aio.models.generate_content(
-        model="gemini-2.5-flash-lite",
-        config=GenerateContentConfig(
-            system_instruction=system_prompt,
-            response_mime_type="application/json",
-            response_schema=GenerateScoreResponse.model_json_schema(),
-            thinking_config=ThinkingConfig(
-                thinking_budget=5000,
+    try:
+        response = await client.aio.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            config=GenerateContentConfig(
+                system_instruction=system_prompt,
+                response_mime_type="application/json",
+                response_schema=GenerateScoreResponse.model_json_schema(),
+                thinking_config=ThinkingConfig(
+                    thinking_budget=5000,
+                ),
             ),
-        ),
-        contents=[generate_score_user_prompt, examples_prompt],
-    )
+            contents=[generate_score_user_prompt, examples_prompt],
+        )
 
-    langfuse.update_current_generation(
-        usage_details={
-            "input": response.usage_metadata.prompt_token_count,
-            "output": response.usage_metadata.candidates_token_count,
-            "cache_read_input_tokens": response.usage_metadata.cached_content_token_count,
-        },
-    )
+        if not response or not response.text:
+            error_msg = "Empty response from Gemini during score generation"
+            logger.error(
+                "Score generation failed - empty response",
+                extra={
+                    "json_fields": {
+                        "error": error_msg,
+                        "model": "gemini-2.5-flash-lite",
+                        "operation": "gemini_score_generation_empty_response",
+                    },
+                    "labels": {
+                        "component": "score_generator_service",
+                        "severity": "high",
+                    },
+                },
+            )
+            raise Exception(error_msg)
 
-    return GenerateScoreResponse.model_validate_json(response.text)
+        # Parse the response
+        result = GenerateScoreResponse.model_validate_json(response.text)
+
+        # Enhanced output tracking with comprehensive details
+        langfuse.update_current_generation(
+            output={
+                "score": result.score,
+                "justification": result.justification,
+                "reasoning": result.reasoning,
+                "justification_length": len(result.justification),
+                "reasoning_length": len(result.reasoning),
+                "success": True,
+            },
+            usage={
+                "input": response.usage_metadata.prompt_token_count,
+                "output": response.usage_metadata.candidates_token_count,
+                "total": response.usage_metadata.total_token_count,
+            },
+            metadata={
+                "score_value": result.score,
+                "score_range": "high"
+                if result.score >= 70
+                else "medium"
+                if result.score >= 40
+                else "low",
+                "justification_length": len(result.justification),
+                "reasoning_length": len(result.reasoning),
+                "completion_reason": "success",
+                "model_version": "gemini-2.5-flash-lite",
+                "cache_read_input_tokens": response.usage_metadata.cached_content_token_count,
+            },
+        )
+
+        logger.info(
+            "Score generation completed successfully",
+            extra={
+                "json_fields": {
+                    "score": result.score,
+                    "score_range": "high"
+                    if result.score >= 70
+                    else "medium"
+                    if result.score >= 40
+                    else "low",
+                    "justification_length": len(result.justification),
+                    "reasoning_length": len(result.reasoning),
+                    "input_tokens": response.usage_metadata.prompt_token_count,
+                    "output_tokens": response.usage_metadata.candidates_token_count,
+                    "total_tokens": response.usage_metadata.total_token_count,
+                    "operation": "gemini_score_generation_success",
+                },
+                "labels": {
+                    "component": "score_generator_service",
+                    "phase": "generation",
+                },
+            },
+        )
+
+        return result
+
+    except Exception as e:
+        error_msg = f"Score generation failed: {e}"
+        logger.error(
+            "Score generation failed with exception",
+            extra={
+                "json_fields": {
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "model": "gemini-2.5-flash-lite",
+                    "operation": "gemini_score_generation_exception",
+                },
+                "labels": {"component": "score_generator_service", "severity": "high"},
+            },
+        )
+
+        # Update generation with error information
+        langfuse.update_current_generation(
+            output=None,
+            metadata={
+                "error": str(e),
+                "completion_reason": "exception",
+            },
+        )
+
+        raise

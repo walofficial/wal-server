@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Dict, List, Optional, Tuple
 
+from bson.objectid import ObjectId
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -25,6 +26,7 @@ from fastapi import (
 from pydantic import BaseModel
 
 from ment_api.common.custom_object_id import CustomObjectId
+from ment_api.configurations.config import settings
 from ment_api.models.feed import Feed
 from ment_api.models.feed_location_mapping import (
     Location,
@@ -61,7 +63,6 @@ from ment_api.services.notification_service import (
 from ment_api.services.og_service import get_og_preview
 from ment_api.services.video_processor_service import publish_video_processor_request
 from ment_api.utils.bot_ids import bot_name_to_id
-from ment_api.configurations.config import settings
 
 # Initialize loggers
 logger = logging.getLogger(__name__)
@@ -77,32 +78,93 @@ GCS_BUCKET_NAME = "ment-verification"
 async def _fetch_and_update_og_preview(
     verification_id: CustomObjectId, media_url: str, media_platform: str
 ):
-    try:
-        # Set status to pending
-        await mongo.verifications.update_one(
-            {"_id": verification_id},
-            {"$set": {"metadata_status": MetadataStatus.PENDING}},
+    with langfuse.start_as_current_span(name="og-preview-fetch-background") as bg_span:
+        bg_span.update(
+            input={
+                "verification_id": str(verification_id),
+                "media_url": media_url,
+                "media_platform": media_platform,
+            },
+            metadata={
+                "operation": "og_preview_background_task",
+                "task_type": "background",
+            },
         )
 
-        # Fetch preview data
-        preview_data_result = await get_og_preview(media_url, media_platform)
+        try:
+            # Set status to pending
+            await mongo.verifications.update_one(
+                {"_id": verification_id},
+                {"$set": {"metadata_status": MetadataStatus.PENDING}},
+            )
 
-        # Update verification with results
-        update = {}
-        if preview_data_result:
-            preview_data = preview_data_result.model_dump()
-            # Facebook has bad titles when instant scraping, title is during the final stages anyway
-            update["preview_data"] = preview_data
+            # Fetch preview data
+            preview_data_result = await get_og_preview(media_url, media_platform)
 
-        await mongo.verifications.update_one({"_id": verification_id}, {"$set": update})
+            # Update verification with results
+            update = {}
+            if preview_data_result:
+                preview_data = preview_data_result.model_dump()
+                # Facebook has bad titles when instant scraping, title is during the final stages anyway
+                update["preview_data"] = preview_data
 
-    except Exception as e:
-        # Set failed status on error
-        await mongo.verifications.update_one(
-            {"_id": verification_id},
-            {"$set": {"metadata_status": MetadataStatus.FAILED}},
-        )
-        logging.error(f"Error fetching OG preview: {e}", exc_info=True)
+            await mongo.verifications.update_one(
+                {"_id": verification_id}, {"$set": update}
+            )
+
+            bg_span.update(
+                output={"has_preview_data": bool(preview_data_result), "success": True}
+            )
+
+            logger.info(
+                "OG preview fetch completed successfully",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "media_platform": media_platform,
+                        "has_preview_data": bool(preview_data_result),
+                        "operation": "og_preview_fetch_success",
+                    },
+                    "labels": {
+                        "component": "background_task",
+                        "task_type": "og_preview",
+                    },
+                },
+            )
+
+        except Exception as e:
+            # Set failed status on error
+            await mongo.verifications.update_one(
+                {"_id": verification_id},
+                {"$set": {"metadata_status": MetadataStatus.FAILED}},
+            )
+
+            bg_span.update(
+                output={
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "success": False,
+                }
+            )
+
+            logger.error(
+                "Error fetching OG preview",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "media_url": media_url,
+                        "media_platform": media_platform,
+                        "error_message": str(e),
+                        "operation": "og_preview_fetch_error",
+                    },
+                    "labels": {
+                        "component": "background_task",
+                        "task_type": "og_preview",
+                        "severity": "high",
+                    },
+                },
+                exc_info=True,
+            )
 
 
 async def _fetch_youtube_metadata_and_process_in_background(
@@ -110,40 +172,143 @@ async def _fetch_youtube_metadata_and_process_in_background(
     youtube_url: str,
     external_user_id: str,
 ):
-    try:
-        # Fetch preview data
-        preview_data = await get_og_preview(youtube_url, "youtube")
+    with langfuse.start_as_current_span(
+        name="youtube-metadata-processing-background"
+    ) as bg_span:
+        bg_span.update(
+            input={
+                "verification_id": str(verification_id),
+                "youtube_url": youtube_url,
+                "user_id": external_user_id,
+            },
+            metadata={
+                "operation": "youtube_background_task",
+                "task_type": "background",
+            },
+        )
 
-        # Update preview data if successful
-        if preview_data:
-            await mongo.verifications.update_one(
-                {"_id": verification_id},
-                {"$set": {"preview_data": preview_data.model_dump()}},
-            )
+        try:
+            # Fetch preview data
+            preview_data = await get_og_preview(youtube_url, "youtube")
 
-            # Check user eligibility and process video
-            user = await mongo.users.find_one({"external_user_id": external_user_id})
-            if user:
-                await publish_video_processor_request(
-                    verification_id,
-                    youtube_url,
-                    external_user_id,
-                    preview_data.title or "TITLE NOT FOUND",
-                )
-
-            else:
-                status = "USER_NOT_FOUND" if not user else "NOT_ELIGIBLE"
+            # Update preview data if successful
+            if preview_data:
                 await mongo.verifications.update_one(
                     {"_id": verification_id},
-                    {"$set": {"ai_video_summary_status": status}},
+                    {"$set": {"preview_data": preview_data.model_dump()}},
                 )
 
-    except Exception as e:
-        logging.error(f"YouTube processing error: {e}", exc_info=True)
-        await mongo.verifications.update_one(
-            {"_id": verification_id},
-            {"$set": {"ai_video_summary_status": "PROCESSING_ERROR"}},
-        )
+                # Check user eligibility and process video
+                user = await mongo.users.find_one(
+                    {"external_user_id": external_user_id}
+                )
+                if user:
+                    await publish_video_processor_request(
+                        verification_id,
+                        youtube_url,
+                        external_user_id,
+                        preview_data.title or "TITLE NOT FOUND",
+                    )
+
+                    bg_span.update(
+                        output={
+                            "has_preview_data": True,
+                            "user_found": True,
+                            "video_processor_triggered": True,
+                            "success": True,
+                        }
+                    )
+
+                    logger.info(
+                        "YouTube metadata processing completed successfully",
+                        extra={
+                            "json_fields": {
+                                "verification_id": str(verification_id),
+                                "youtube_url": youtube_url,
+                                "user_id": external_user_id,
+                                "video_title": preview_data.title or "TITLE NOT FOUND",
+                                "operation": "youtube_processing_success",
+                            },
+                            "labels": {
+                                "component": "background_task",
+                                "task_type": "youtube_processing",
+                            },
+                        },
+                    )
+
+                else:
+                    status = "USER_NOT_FOUND" if not user else "NOT_ELIGIBLE"
+                    await mongo.verifications.update_one(
+                        {"_id": verification_id},
+                        {"$set": {"ai_video_summary_status": status}},
+                    )
+
+                    bg_span.update(
+                        output={
+                            "has_preview_data": True,
+                            "user_found": False,
+                            "video_processor_triggered": False,
+                            "status": status,
+                            "success": True,
+                        }
+                    )
+
+                    logger.warning(
+                        "YouTube processing - user not eligible",
+                        extra={
+                            "json_fields": {
+                                "verification_id": str(verification_id),
+                                "user_id": external_user_id,
+                                "status": status,
+                                "operation": "youtube_processing_user_not_eligible",
+                            },
+                            "labels": {
+                                "component": "background_task",
+                                "task_type": "youtube_processing",
+                            },
+                        },
+                    )
+            else:
+                bg_span.update(
+                    output={
+                        "has_preview_data": False,
+                        "success": False,
+                        "error": "No preview data retrieved",
+                    }
+                )
+
+        except Exception as e:
+            await mongo.verifications.update_one(
+                {"_id": verification_id},
+                {"$set": {"ai_video_summary_status": "PROCESSING_ERROR"}},
+            )
+
+            bg_span.update(
+                output={
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "success": False,
+                }
+            )
+
+            logger.error(
+                "YouTube processing error",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "youtube_url": youtube_url,
+                        "user_id": external_user_id,
+                        "error_message": str(e),
+                        "operation": "youtube_processing_error",
+                    },
+                    "labels": {
+                        "component": "background_task",
+                        "task_type": "youtube_processing",
+                        "severity": "high",
+                    },
+                },
+                exc_info=True,
+            )
 
 
 # Add this helper function near the top of the file
@@ -377,8 +542,15 @@ async def publish_post(
         File(media_type="image/jpeg", description="verification images"),
     ] = [],
 ):
-    with langfuse.start_as_current_span(name="publish_post_endpoint") as endpoint_span:
-        external_user_id = request.state.supabase_user_id
+    external_user_id = request.state.supabase_user_id
+    potential_verification_id = ObjectId()
+
+    with langfuse.start_as_current_span(
+        name="publish-post-for-fact-check"
+    ) as endpoint_span:
+        endpoint_span.update_trace(
+            user_id=external_user_id, session_id=str(potential_verification_id)
+        )
 
         endpoint_span.update(
             input={
@@ -392,193 +564,493 @@ async def publish_post(
                 "endpoint": "/publish-post",
                 "method": "POST",
             },
-            user_id=external_user_id,
         )
 
-    try:
-        # 1. Prepare image upload coroutines
-        upload_coroutines = []
-        for file in files:
-            file_content = await file.read()
-            upload_coroutines.append(
-                upload_image(file_content, f"{file.filename}", file.content_type)
-            )
+        try:
+            # 1. Prepare image upload coroutines with Langfuse tracking
+            upload_coroutines = []
+            images_with_dims = []
 
-        if upload_coroutines:
-            images_with_dims = await asyncio.gather(*upload_coroutines)
-
-        # 2. Process content and extract initial media info
-        cleaned_content = content.strip()
-
-        extracted_media = extract_social_media_url(cleaned_content)
-
-        logging.info(f"Extracted media extraction result: {extracted_media}")
-
-        youtube_url = None
-        initial_ai_video_summary_status = None
-
-        if extracted_media:
-            media_url = extracted_media["url"]
-            media_platform = extracted_media["platform"]
-
-            if media_platform == "youtube":
-                youtube_url = media_url
-                logging.info(
-                    f"Found YouTube video: {youtube_url}. Will process metadata in background."
-                )
-            else:
-                logging.info(
-                    f"Found social media ({media_platform}): {media_url}. Will fetch OG preview in background."
-                )
-                # For non-YouTube, social_media_info can be set if it's the primary identified link.
-                # However, the original logic differentiated social_media_info for other scraping purposes.
-                # Let's ensure clarity: extracted_media is the primary content link.
-                # social_media_info is for additional scraping mentioned later.
-                # So, if extracted_media is not YouTube, we schedule its OG fetch.
-
-        # This part handles other specific social media info, potentially different from extracted_media
-        # The original code's `social_media_info` variable was set if platform was not youtube.
-        # Let's ensure this doesn't conflict.
-        # The original 'social_media_info' seemed to be tied to 'extracted_media' if not YouTube.
-        # Let's refine: if extracted_media is non-youtube, it might be what social_media_info was for.
-        active_social_media_info_for_scrape = None
-        if extracted_media and extracted_media["platform"] != "youtube":
-            active_social_media_info_for_scrape = extracted_media
-        # The original logic had `social_media_info = extracted_media` if not youtube.
-        # Then it checked `if social_media_info:`
-        # This seems to be the correct interpretation for the scraper part.
-
-        # 5. Prepare verification document
-        verification_doc = {
-            "feed_id": feed_id,
-            "assignee_user_id": external_user_id,
-            "text_content": content,
-            "state": "READY_FOR_USE",
-            "last_modified_date": datetime.now(timezone.utc),
-            "is_public": True,
-            "image_gallery_with_dims": (
-                [img.model_dump() for img in images_with_dims]
-                if upload_coroutines
-                else []
-            ),
-            "title": "",
-            "external_video": extracted_media,  # Store original extracted info (URL, platform)
-            "ai_video_summary_status": initial_ai_video_summary_status,
-            # UI can immediately show pending status if there's media to process without refetching
-            "metadata_status": MetadataStatus.PENDING,  # Set pending status if there's media to process
-        }
-
-        if (
-            active_social_media_info_for_scrape
-        ):  # This is for the social media scraper service
-            from ment_api.models.location_feed_post import (
-                SocialMediaScrapeDetails,
-                SocialMediaScrapeStatus,
-            )
-
-            verification_doc["social_media_scrape_details"] = SocialMediaScrapeDetails(
-                platform=active_social_media_info_for_scrape["platform"],
-                url=active_social_media_info_for_scrape["url"],
-                image_urls=[],
-            ).model_dump()
-            verification_doc["social_media_scrape_status"] = (
-                SocialMediaScrapeStatus.PENDING
-            )
-
-        result = await mongo.verifications.insert_one(verification_doc)
-        verification_id = result.inserted_id
-        verification_doc["_id"] = verification_id
-
-        # 7. Schedule background tasks that need verification_id
-        if youtube_url:  # This means extracted_media was YouTube
-            background_tasks.add_task(
-                _fetch_youtube_metadata_and_process_in_background,
-                verification_id,
-                youtube_url,
-                external_user_id,
-            )
-        elif extracted_media and extracted_media["platform"] != "youtube":
-            # The OG preview task was added earlier, but it needs verification_id.
-            # This is a problem. The task must be added *after* verification_id is known.
-            # Let's re-add it here with verification_id.
-            # To do this, we need to remove the previous one if it was added.
-            # Simpler: only add tasks here.
-
-            # Remove previous attempt to add _fetch_and_update_og_preview if any
-            # This is not directly possible with BackgroundTasks API.
-            # Instead, only add tasks here.
-
-            # Reset logic for adding OG preview task:
-            # The 'if' condition here is slightly redundant due to the elif but harmless.
-            # This is the correct place to add the task.
-            background_tasks.add_task(
-                _fetch_and_update_og_preview,
-                verification_id,  # Now we have it
-                extracted_media["url"],
-                extracted_media["platform"],
-            )
-
-        if active_social_media_info_for_scrape:  # If social media needs scraping
-            from ment_api.services.social_media_scraper_service import (
-                publish_social_media_scrape_request,
-            )
-
-            logging.info(
-                f"Scheduling background task for social media scrape: {verification_id}"
-            )
-            # Assuming publish_social_media_scrape_request is non-blocking or handled by background_tasks correctly
-            background_tasks.add_task(
-                publish_social_media_scrape_request, verification_id
-            )
-
-        needs_general_fact_check = True
-        if (
-            verification_doc.get("social_media_scrape_status") == "PENDING"
-        ):  # Handled by social scraper
-            needs_general_fact_check = False
-
-        if (
-            needs_general_fact_check
-            and verification_doc["state"] == "PENDING_FACTCHECK"
-        ):
-            # If it's marked for fact check and no specific media processor will handle it
-            logging.info(f"Scheduling general fact check for {verification_id}")
-
-            background_tasks.add_task(publish_check_fact, [verification_id])
-        elif not extracted_media and not active_social_media_info_for_scrape:
-            # Fallback for simple posts that only have `should_factcheck`
-            logging.info(
-                f"Scheduling general fact check (fallback) for {verification_id}"
-            )
-
-            background_tasks.add_task(publish_check_fact, [verification_id])
-
-        endpoint_span.update(
-            output={
-                "verification_id": str(verification_id),
-                "has_background_tasks": True,
-                "processing_type": (
-                    "youtube"
-                    if youtube_url
-                    else (
-                        "social_media"
-                        if active_social_media_info_for_scrape
-                        else "fact_check"
+            if files:
+                with endpoint_span.start_as_current_span(
+                    name="file-upload-processing"
+                ) as upload_span:
+                    upload_span.update(
+                        input={
+                            "file_count": len(files),
+                            "file_names": [file.filename for file in files],
+                            "file_sizes": [],
+                            "content_types": [file.content_type for file in files],
+                        },
+                        metadata={
+                            "operation": "file_upload",
+                            "upload_type": "verification_images",
+                        },
                     )
-                ),
-                "success": True,
-            },
-            metadata={
-                "youtube_url": youtube_url,
-                "has_social_media_scrape": bool(active_social_media_info_for_scrape),
-            },
-        )
 
-        return FeedPost(**verification_doc)
+                    # Read file contents and prepare upload coroutines
+                    for idx, file in enumerate(files):
+                        file_content = await file.read()
+                        file_size = len(file_content)
+                        upload_span.input["file_sizes"].append(file_size)
+                        upload_coroutines.append(
+                            upload_image(
+                                file_content, f"{file.filename}", file.content_type
+                            )
+                        )
 
-    except Exception:
-        logging.exception("Error during publish_post:")  # Log the full traceback
-        raise HTTPException(status_code=500, detail="Internal server error")
+                    # Execute all uploads concurrently
+                    try:
+                        images_with_dims = await asyncio.gather(*upload_coroutines)
+
+                        # Update upload span with results
+                        upload_span.update(
+                            output={
+                                "uploaded_count": len(images_with_dims),
+                                "upload_urls": [img.url for img in images_with_dims],
+                                "total_size_bytes": sum(
+                                    upload_span.input["file_sizes"]
+                                ),
+                                "success": True,
+                            }
+                        )
+
+                        logger.info(
+                            "File uploads completed successfully",
+                            extra={
+                                "json_fields": {
+                                    "uploaded_count": len(images_with_dims),
+                                    "total_size_bytes": sum(
+                                        upload_span.input["file_sizes"]
+                                    ),
+                                    "operation": "file_upload_batch",
+                                },
+                                "labels": {
+                                    "component": "publish_post",
+                                    "stage": "file_upload",
+                                },
+                            },
+                        )
+
+                    except Exception as upload_error:
+                        upload_span.update(
+                            output={"error": str(upload_error), "success": False}
+                        )
+                        logger.error(
+                            "File upload failed",
+                            extra={
+                                "json_fields": {
+                                    "error_message": str(upload_error),
+                                    "file_count": len(files),
+                                    "operation": "file_upload_batch_error",
+                                },
+                                "labels": {
+                                    "component": "publish_post",
+                                    "stage": "file_upload",
+                                    "severity": "high",
+                                },
+                            },
+                        )
+                        raise
+
+            # 2. Process content and extract initial media info
+            cleaned_content = content.strip()
+
+            extracted_media = extract_social_media_url(cleaned_content)
+
+            logging.info(f"Extracted media extraction result: {extracted_media}")
+
+            youtube_url = None
+            initial_ai_video_summary_status = None
+
+            if extracted_media:
+                media_url = extracted_media["url"]
+                media_platform = extracted_media["platform"]
+
+                if media_platform == "youtube":
+                    youtube_url = media_url
+                    logging.info(
+                        f"Found YouTube video: {youtube_url}. Will process metadata in background."
+                    )
+                else:
+                    logging.info(
+                        f"Found social media ({media_platform}): {media_url}. Will fetch OG preview in background."
+                    )
+                    # For non-YouTube, social_media_info can be set if it's the primary identified link.
+                    # However, the original logic differentiated social_media_info for other scraping purposes.
+                    # Let's ensure clarity: extracted_media is the primary content link.
+                    # social_media_info is for additional scraping mentioned later.
+                    # So, if extracted_media is not YouTube, we schedule its OG fetch.
+
+            # This part handles other specific social media info, potentially different from extracted_media
+            # The original code's `social_media_info` variable was set if platform was not youtube.
+            # Let's ensure this doesn't conflict.
+            # The original 'social_media_info' seemed to be tied to 'extracted_media' if not YouTube.
+            # Let's refine: if extracted_media is non-youtube, it might be what social_media_info was for.
+            active_social_media_info_for_scrape = None
+            if extracted_media and extracted_media["platform"] != "youtube":
+                active_social_media_info_for_scrape = extracted_media
+            # The original logic had `social_media_info = extracted_media` if not youtube.
+            # Then it checked `if social_media_info:`
+            # This seems to be the correct interpretation for the scraper part.
+
+            # 5. Prepare verification document with Langfuse tracking
+            with endpoint_span.start_as_current_span(
+                name="verification-document-creation"
+            ) as doc_span:
+                verification_doc = {
+                    "_id": potential_verification_id,
+                    "feed_id": feed_id,
+                    "assignee_user_id": external_user_id,
+                    "text_content": content,
+                    "state": "READY_FOR_USE",
+                    "last_modified_date": datetime.now(timezone.utc),
+                    "is_public": True,
+                    "image_gallery_with_dims": (
+                        [img.model_dump() for img in images_with_dims]
+                        if images_with_dims
+                        else []
+                    ),
+                    "title": "",
+                    "external_video": extracted_media,  # Store original extracted info (URL, platform)
+                    "ai_video_summary_status": initial_ai_video_summary_status,
+                    # UI can immediately show pending status if there's media to process without refetching
+                    "metadata_status": MetadataStatus.PENDING,  # Set pending status if there's media to process
+                }
+
+                doc_span.update(
+                    input={
+                        "verification_id": str(potential_verification_id),
+                        "feed_id": str(feed_id),
+                        "user_id": external_user_id,
+                        "content_length": len(content),
+                        "has_images": len(images_with_dims) > 0,
+                        "image_count": len(images_with_dims),
+                        "has_external_media": bool(extracted_media),
+                        "external_media_platform": extracted_media.get("platform")
+                        if extracted_media
+                        else None,
+                    },
+                    metadata={
+                        "operation": "verification_doc_preparation",
+                        "document_type": "location_feed_post",
+                    },
+                )
+
+                logger.info(
+                    "Verification document prepared",
+                    extra={
+                        "json_fields": {
+                            "feed_id": str(feed_id),
+                            "content_length": len(content),
+                            "image_count": len(images_with_dims),
+                            "has_external_media": bool(extracted_media),
+                            "operation": "verification_doc_preparation",
+                        },
+                        "labels": {
+                            "component": "publish_post",
+                            "stage": "doc_preparation",
+                        },
+                    },
+                )
+
+            if (
+                active_social_media_info_for_scrape
+            ):  # This is for the social media scraper service
+                from ment_api.models.location_feed_post import (
+                    SocialMediaScrapeDetails,
+                    SocialMediaScrapeStatus,
+                )
+
+                verification_doc["social_media_scrape_details"] = (
+                    SocialMediaScrapeDetails(
+                        platform=active_social_media_info_for_scrape["platform"],
+                        url=active_social_media_info_for_scrape["url"],
+                        image_urls=[],
+                    ).model_dump()
+                )
+                verification_doc["social_media_scrape_status"] = (
+                    SocialMediaScrapeStatus.PENDING
+                )
+
+                # Insert verification document into database with tracking
+                with doc_span.start_as_current_span(
+                    name="database-insert-verification"
+                ) as db_span:
+                    db_span.update(
+                        input={
+                            "collection": "verifications",
+                            "document_size_estimate": len(str(verification_doc)),
+                        },
+                        metadata={"operation": "mongodb_insert", "database": "mongo"},
+                    )
+
+                    try:
+                        result = await mongo.verifications.insert_one(verification_doc)
+                        verification_id = result.inserted_id
+                        verification_doc["_id"] = verification_id
+
+                        db_span.update(
+                            output={
+                                "verification_id": str(verification_id),
+                                "success": True,
+                            }
+                        )
+
+                        logger.info(
+                            "Verification document inserted successfully",
+                            extra={
+                                "json_fields": {
+                                    "verification_id": str(verification_id),
+                                    "feed_id": str(feed_id),
+                                    "operation": "verification_doc_insert",
+                                },
+                                "labels": {
+                                    "component": "publish_post",
+                                    "stage": "database_insert",
+                                },
+                            },
+                        )
+
+                    except Exception as db_error:
+                        db_span.update(
+                            output={"error": str(db_error), "success": False}
+                        )
+                        logger.error(
+                            "Failed to insert verification document",
+                            extra={
+                                "json_fields": {
+                                    "error_message": str(db_error),
+                                    "feed_id": str(feed_id),
+                                    "operation": "verification_doc_insert_error",
+                                },
+                                "labels": {
+                                    "component": "publish_post",
+                                    "stage": "database_insert",
+                                    "severity": "high",
+                                },
+                            },
+                        )
+                        raise
+
+                # Complete the document creation span
+                doc_span.update(
+                    output={
+                        "verification_id": str(verification_id),
+                        "document_created": True,
+                        "success": True,
+                    }
+                )
+
+            # 7. Schedule background tasks that need verification_id with Langfuse tracking
+            with endpoint_span.start_as_current_span(
+                name="background-tasks-scheduling"
+            ) as tasks_span:
+                scheduled_tasks = []
+
+                if youtube_url:  # This means extracted_media was YouTube
+                    background_tasks.add_task(
+                        _fetch_youtube_metadata_and_process_in_background,
+                        verification_id,
+                        youtube_url,
+                        external_user_id,
+                    )
+                    scheduled_tasks.append("youtube_metadata_processing")
+
+                elif extracted_media and extracted_media["platform"] != "youtube":
+                    # The OG preview task was added earlier, but it needs verification_id.
+                    # This is a problem. The task must be added *after* verification_id is known.
+                    # Let's re-add it here with verification_id.
+                    # To do this, we need to remove the previous one if it was added.
+                    # Simpler: only add tasks here.
+
+                    # Remove previous attempt to add _fetch_and_update_og_preview if any
+                    # This is not directly possible with BackgroundTasks API.
+                    # Instead, only add tasks here.
+
+                    # Reset logic for adding OG preview task:
+                    # The 'if' condition here is slightly redundant due to the elif but harmless.
+                    # This is the correct place to add the task.
+                    background_tasks.add_task(
+                        _fetch_and_update_og_preview,
+                        verification_id,  # Now we have it
+                        extracted_media["url"],
+                        extracted_media["platform"],
+                    )
+                    scheduled_tasks.append("og_preview_fetch")
+
+                if (
+                    active_social_media_info_for_scrape
+                ):  # If social media needs scraping
+                    from ment_api.services.social_media_scraper_service import (
+                        publish_social_media_scrape_request,
+                    )
+
+                    logger.info(
+                        "Scheduling background task for social media scrape",
+                        extra={
+                            "json_fields": {
+                                "verification_id": str(verification_id),
+                                "platform": active_social_media_info_for_scrape[
+                                    "platform"
+                                ],
+                                "operation": "social_media_scrape_schedule",
+                            },
+                            "labels": {
+                                "component": "publish_post",
+                                "stage": "background_tasks",
+                            },
+                        },
+                    )
+                    # Assuming publish_social_media_scrape_request is non-blocking or handled by background_tasks correctly
+                    background_tasks.add_task(
+                        publish_social_media_scrape_request, verification_id
+                    )
+                    scheduled_tasks.append("social_media_scrape")
+
+                tasks_span.update(
+                    input={
+                        "verification_id": str(verification_id),
+                        "youtube_url": youtube_url,
+                        "has_external_media": bool(extracted_media),
+                        "has_social_media_scrape": bool(
+                            active_social_media_info_for_scrape
+                        ),
+                    },
+                    output={
+                        "scheduled_tasks": scheduled_tasks,
+                        "task_count": len(scheduled_tasks),
+                    },
+                    metadata={"operation": "background_tasks_scheduling"},
+                )
+
+                needs_general_fact_check = True
+                if (
+                    verification_doc.get("social_media_scrape_status") == "PENDING"
+                ):  # Handled by social scraper
+                    needs_general_fact_check = False
+
+                if (
+                    needs_general_fact_check
+                    and verification_doc["state"] == "PENDING_FACTCHECK"
+                ):
+                    # If it's marked for fact check and no specific media processor will handle it
+                    logger.info(
+                        "Scheduling general fact check",
+                        extra={
+                            "json_fields": {
+                                "verification_id": str(verification_id),
+                                "reason": "pending_factcheck_state",
+                                "operation": "fact_check_schedule",
+                            },
+                            "labels": {
+                                "component": "publish_post",
+                                "stage": "background_tasks",
+                            },
+                        },
+                    )
+
+                    background_tasks.add_task(publish_check_fact, [verification_id])
+                    scheduled_tasks.append("fact_check")
+                elif not extracted_media and not active_social_media_info_for_scrape:
+                    # Fallback for simple posts that only have `should_factcheck`
+                    logger.info(
+                        "Scheduling general fact check (fallback)",
+                        extra={
+                            "json_fields": {
+                                "verification_id": str(verification_id),
+                                "reason": "fallback_simple_post",
+                                "operation": "fact_check_schedule",
+                            },
+                            "labels": {
+                                "component": "publish_post",
+                                "stage": "background_tasks",
+                            },
+                        },
+                    )
+
+                    background_tasks.add_task(publish_check_fact, [verification_id])
+                    scheduled_tasks.append("fact_check")
+
+                # Update final task scheduling summary
+                tasks_span.update(
+                    output={
+                        "scheduled_tasks": scheduled_tasks,
+                        "task_count": len(scheduled_tasks),
+                        "needs_general_fact_check": needs_general_fact_check,
+                    }
+                )
+
+                logger.info(
+                    "Background tasks scheduled successfully",
+                    extra={
+                        "json_fields": {
+                            "verification_id": str(verification_id),
+                            "scheduled_tasks": scheduled_tasks,
+                            "task_count": len(scheduled_tasks),
+                            "operation": "background_tasks_completed",
+                        },
+                        "labels": {
+                            "component": "publish_post",
+                            "stage": "background_tasks",
+                        },
+                    },
+                )
+
+            endpoint_span.update(
+                output={
+                    "verification_id": str(verification_id),
+                    "has_background_tasks": True,
+                    "processing_type": (
+                        "youtube"
+                        if youtube_url
+                        else (
+                            "social_media"
+                            if active_social_media_info_for_scrape
+                            else "fact_check"
+                        )
+                    ),
+                    "success": True,
+                },
+                metadata={
+                    "youtube_url": youtube_url,
+                    "has_social_media_scrape": bool(
+                        active_social_media_info_for_scrape
+                    ),
+                },
+            )
+
+            return FeedPost(**verification_doc)
+
+        except Exception as e:
+            # Enhanced error tracking with Langfuse
+            endpoint_span.update(
+                output={
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "success": False,
+                }
+            )
+
+            logger.error(
+                "Error during publish_post",
+                extra={
+                    "json_fields": {
+                        "error_message": str(e),
+                        "error_type": type(e).__name__,
+                        "feed_id": str(feed_id),
+                        "user_id": external_user_id,
+                        "operation": "publish_post_error",
+                    },
+                    "labels": {
+                        "component": "publish_post",
+                        "stage": "error_handling",
+                        "severity": "high",
+                    },
+                },
+                exc_info=True,
+            )
+            raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/get-country-feed", response_model=Feed, operation_id="get_country_feed")
