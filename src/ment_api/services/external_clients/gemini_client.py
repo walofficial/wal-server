@@ -7,6 +7,7 @@ import aiohttp
 import PIL.Image
 from google.genai import Client
 from google.genai.types import BlockedReason, GenerateContentConfig, ThinkingConfig
+from langfuse import observe
 from tenacity import (
     before_sleep_log,
     retry,
@@ -14,7 +15,6 @@ from tenacity import (
     wait_random_exponential,
 )
 
-from langfuse import observe
 from ment_api.configurations.config import settings
 from ment_api.services.external_clients.langfuse_client import langfuse
 from ment_api.services.external_clients.models.gemini_models import (
@@ -43,7 +43,7 @@ class GeminiClient:
     async def download_image(self, url: str) -> Optional[PIL.Image.Image]:
         """
         Download an image from a URL and return it as a PIL Image object.
-        Now uses @observe decorator for automatic tracing.
+        Enhanced with comprehensive Langfuse observability.
 
         Args:
             url: URL of the image to download
@@ -51,10 +51,13 @@ class GeminiClient:
         Returns:
             PIL Image object or None if download fails
         """
-        # Set trace input using v3 pattern
+        # Set trace input using v3 pattern with enhanced metadata
         self.langfuse.update_current_trace(
             input={"url": url},
-            metadata={"operation": "download_image"},
+            metadata={
+                "operation": "download_image",
+                "url_domain": url.split("/")[2] if "://" in url else "unknown",
+            },
         )
 
         try:
@@ -64,12 +67,27 @@ class GeminiClient:
                         error_msg = (
                             f"Failed to download image from {url}: {response.status}"
                         )
-                        logger.error(error_msg)
+                        logger.error(
+                            "Image download failed - HTTP error",
+                            extra={
+                                "json_fields": {
+                                    "url": url,
+                                    "status_code": response.status,
+                                    "error": error_msg,
+                                    "operation": "gemini_image_download_http_error",
+                                },
+                                "labels": {
+                                    "component": "gemini_client",
+                                    "severity": "medium",
+                                },
+                            },
+                        )
                         self.langfuse.update_current_trace(
                             output=None,
                             metadata={
                                 "error": error_msg,
                                 "status_code": response.status,
+                                "failure_reason": "http_error",
                             },
                         )
                         return None
@@ -78,25 +96,80 @@ class GeminiClient:
                     try:
                         image = PIL.Image.open(BytesIO(image_data))
                         self.langfuse.update_current_trace(
-                            output={"success": True, "image_size": image.size},
+                            output={
+                                "success": True,
+                                "image_size": image.size,
+                                "data_size_bytes": len(image_data),
+                            },
                             metadata={
                                 "image_format": image.format,
                                 "image_mode": image.mode,
+                                "width": image.size[0],
+                                "height": image.size[1],
+                                "data_size_kb": round(len(image_data) / 1024, 2),
+                            },
+                        )
+                        logger.debug(
+                            "Image downloaded successfully",
+                            extra={
+                                "json_fields": {
+                                    "url": url,
+                                    "image_size": image.size,
+                                    "format": image.format,
+                                    "data_size_kb": round(len(image_data) / 1024, 2),
+                                    "operation": "gemini_image_download_success",
+                                },
+                                "labels": {"component": "gemini_client"},
                             },
                         )
                         return image
                     except Exception as e:
                         error_msg = f"Failed to open image data: {e}"
-                        logger.error(error_msg)
+                        logger.error(
+                            "Image download failed - image processing error",
+                            extra={
+                                "json_fields": {
+                                    "url": url,
+                                    "error": str(e),
+                                    "error_type": type(e).__name__,
+                                    "data_size_bytes": len(image_data),
+                                    "operation": "gemini_image_download_processing_error",
+                                },
+                                "labels": {
+                                    "component": "gemini_client",
+                                    "severity": "medium",
+                                },
+                            },
+                        )
                         self.langfuse.update_current_trace(
-                            output=None, metadata={"error": error_msg}
+                            output=None,
+                            metadata={
+                                "error": error_msg,
+                                "failure_reason": "image_processing_error",
+                                "data_size_bytes": len(image_data),
+                            },
                         )
                         return None
         except Exception as e:
             error_msg = f"Error downloading image from {url}: {e}"
-            logger.error(error_msg)
+            logger.error(
+                "Image download failed - network error",
+                extra={
+                    "json_fields": {
+                        "url": url,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "operation": "gemini_image_download_network_error",
+                    },
+                    "labels": {"component": "gemini_client", "severity": "medium"},
+                },
+            )
             self.langfuse.update_current_trace(
-                output=None, metadata={"error": error_msg}
+                output=None,
+                metadata={
+                    "error": error_msg,
+                    "failure_reason": "network_error",
+                },
             )
             return None
 
@@ -166,7 +239,7 @@ class GeminiClient:
     ) -> Optional[str]:
         """
         Analyze multiple images in a single call using Gemini.
-        Now uses @observe decorator for automatic tracing.
+        Now uses @observe decorator for automatic tracing with enhanced generation observability.
 
         Args:
             images: List of PIL Image objects to analyze
@@ -177,7 +250,17 @@ class GeminiClient:
         """
         if not images:
             error_msg = "Cannot analyze images: no images provided"
-            logger.error(error_msg)
+            logger.error(
+                "Gemini image analysis failed - no images provided",
+                extra={
+                    "json_fields": {
+                        "error": error_msg,
+                        "operation": "gemini_analyze_images",
+                        "model": self.model_id,
+                    },
+                    "labels": {"component": "gemini_client", "severity": "medium"},
+                },
+            )
             self.langfuse.update_current_trace(
                 input={"image_count": 0, "prompt": analysis_prompt},
                 output=None,
@@ -199,47 +282,131 @@ class GeminiClient:
         )
 
         try:
-            # Create generation span using v3 pattern
+            # Create generation span using v3 pattern with enhanced observability
             with self.langfuse.start_as_current_generation(
                 name="gemini_analyze_images", model=self.model_id
             ) as gen:
                 # Build content list with all images followed by the prompt
                 contents = images + [analysis_prompt]
+
+                # Enhanced input tracking for generation
                 gen.update(
-                    input=contents,
-                    model=self.model_id,
+                    input={
+                        "prompt": analysis_prompt,
+                        "image_count": len(images),
+                        "model_config": {
+                            "model": self.model_id,
+                            "temperature": None,  # Default temperature
+                            "max_tokens": None,  # Default max tokens
+                        },
+                    },
                     metadata={
                         "image_count": len(images),
-                        "prompt": analysis_prompt,
+                        "prompt_length": len(analysis_prompt),
+                        "operation_type": "image_analysis",
+                        "fact_check_context": True,
                     },
                 )
+
+                logger.info(
+                    "Starting Gemini image analysis generation",
+                    extra={
+                        "json_fields": {
+                            "image_count": len(images),
+                            "prompt_length": len(analysis_prompt),
+                            "model": self.model_id,
+                            "operation": "gemini_analyze_images_start",
+                        },
+                        "labels": {"component": "gemini_client", "phase": "generation"},
+                    },
+                )
+
                 response = await gemini_client.aio.models.generate_content(
                     model=self.model_id, contents=contents
                 )
 
                 if response and response.text:
                     result = response.text.strip()
+
+                    # Enhanced output tracking with comprehensive usage details
                     gen.update(
-                        output={"analysis": result},
-                        usage_details={
-                            "input": response.usage_metadata.prompt_token_count,
-                            "output": response.usage_metadata.candidates_token_count,
-                            "cache_read_input_tokens": response.usage_metadata.cached_content_token_count,
+                        output={
+                            "analysis": result,
+                            "response_length": len(result),
+                            "success": True,
                         },
-                        metadata={"response_length": len(result)},
+                        usage_details={
+                            "prompt_tokens": response.usage_metadata.prompt_token_count,
+                            "completion_tokens": response.usage_metadata.candidates_token_count,
+                            "total_tokens": response.usage_metadata.total_token_count,
+                            "prompt_tokens_details": {
+                                "cached_tokens": response.usage_metadata.cached_content_token_count,
+                            },
+                        },
+                        metadata={
+                            "response_length": len(result),
+                            "completion_reason": "success",
+                            "model_version": self.model_id,
+                        },
+                    )
+
+                    logger.info(
+                        "Gemini image analysis generation completed successfully",
+                        extra={
+                            "json_fields": {
+                                "response_length": len(result),
+                                "input_tokens": response.usage_metadata.prompt_token_count,
+                                "output_tokens": response.usage_metadata.candidates_token_count,
+                                "total_tokens": response.usage_metadata.total_token_count,
+                                "operation": "gemini_analyze_images_success",
+                            },
+                            "labels": {
+                                "component": "gemini_client",
+                                "phase": "generation",
+                            },
+                        },
                     )
 
                     return result
                 else:
                     error_msg = "No response from Gemini"
-                    logger.error(error_msg)
-                    gen.update(output=None, metadata={"error": error_msg})
+                    logger.error(
+                        "Gemini image analysis failed - empty response",
+                        extra={
+                            "json_fields": {
+                                "error": error_msg,
+                                "model": self.model_id,
+                                "operation": "gemini_analyze_images_empty_response",
+                            },
+                            "labels": {
+                                "component": "gemini_client",
+                                "severity": "high",
+                            },
+                        },
+                    )
+                    gen.update(
+                        output=None,
+                        metadata={
+                            "error": error_msg,
+                            "completion_reason": "empty_response",
+                        },
+                    )
                     return None
 
         except Exception as e:
-            logger.info(e)
             error_msg = f"Error analyzing images with Gemini: {e}"
-            logger.error(error_msg)
+            logger.error(
+                "Gemini image analysis generation failed with exception",
+                extra={
+                    "json_fields": {
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "model": self.model_id,
+                        "operation": "gemini_analyze_images_exception",
+                    },
+                    "labels": {"component": "gemini_client", "severity": "high"},
+                },
+            )
             raise
 
     async def download_and_analyze_images(
@@ -420,6 +587,7 @@ class GeminiClient:
             )
             return final_descriptions
 
+    @observe()
     @retry(
         wait=wait_random_exponential(multiplier=1, max=4),
         before_sleep=before_sleep_log(logger, logging.ERROR),
@@ -430,7 +598,8 @@ class GeminiClient:
         self, request: FactCheckInputRequest
     ) -> Optional[FactCheckInputResponse]:
         """
-        Analyze a statement and any images to create an enhanced statement for fact-checking
+        Analyze a statement and any images to create an enhanced statement for fact-checking.
+        Enhanced with comprehensive Langfuse observability and nested span tracking.
 
         This method analyzes the statement and images with Gemini and generates a
         comprehensive statement that can be passed to the Jina fact check service.
@@ -442,41 +611,107 @@ class GeminiClient:
             FactCheckInputResponse object that incorporates both text and image analysis
             or None if the analysis failed
         """
-        with self.langfuse.start_as_current_generation(
-            name="gemini_fact_check_input_analysis", model="gemini-2.5-flash"
-        ) as gen:
-            logger.info(
-                f"Processing statement and images for fact checking: {request.statement}"
-            )
+        logger.info(
+            "Starting Gemini fact check input analysis",
+            extra={
+                "json_fields": {
+                    "statement_length": len(request.statement),
+                    "image_count": len(request.image_urls) if request.image_urls else 0,
+                    "is_social_media": request.is_social_media,
+                    "operation": "gemini_fact_check_input_start",
+                },
+                "labels": {
+                    "component": "gemini_client",
+                    "phase": "fact_check_input",
+                },
+            },
+        )
 
-            # Create the system prompt
-            system_prompt = """You are a fact-checking assistant. Your task is to analyze the provided statement
+        # Create the system prompt
+        system_prompt = """You are a fact-checking assistant. Your task is to analyze the provided statement
 and images (if any) and create a comprehensive text description that captures all claims 
 that need to be fact-checked. Focus on extracting key factual claims and summarizing 
 any visual evidence from images in a way that can be verified by a text-only fact-checking system."""
 
-            # Process images if they are included in the request
-            image_objects = []
-            if request.image_urls:
-                logger.info(
-                    f"Processing {len(request.image_urls)} images for fact checking"
+        # Process images if they are included in the request - nested span for image processing
+        image_objects = []
+        if request.image_urls:
+            with self.langfuse.start_as_current_span(
+                name="image_download_processing"
+            ) as img_span:
+                img_span.update(
+                    input={
+                        "image_urls": request.image_urls,
+                        "image_count": len(request.image_urls),
+                    },
+                    metadata={"operation": "image_download_processing"},
                 )
+
+                logger.info(
+                    "Processing images for fact checking",
+                    extra={
+                        "json_fields": {
+                            "image_count": len(request.image_urls),
+                            "operation": "gemini_image_download_start",
+                        },
+                        "labels": {
+                            "component": "gemini_client",
+                            "phase": "image_processing",
+                        },
+                    },
+                )
+
+                successful_downloads = 0
                 for url in request.image_urls:
                     image = await self.download_image(url)
                     if image:
                         image_objects.append(image)
-                        logger.info(f"Successfully downloaded image from {url}")
+                        successful_downloads += 1
+                        logger.debug(
+                            "Successfully downloaded image",
+                            extra={
+                                "json_fields": {
+                                    "image_url": url,
+                                    "operation": "gemini_image_download_success",
+                                },
+                                "labels": {"component": "gemini_client"},
+                            },
+                        )
                     else:
-                        logger.warning(f"Failed to download image from {url}")
+                        logger.warning(
+                            "Failed to download image",
+                            extra={
+                                "json_fields": {
+                                    "image_url": url,
+                                    "operation": "gemini_image_download_failed",
+                                },
+                                "labels": {
+                                    "component": "gemini_client",
+                                    "severity": "medium",
+                                },
+                            },
+                        )
 
-            # Create the prompt for generating the enhanced statement
+                img_span.update(
+                    output={
+                        "successful_downloads": successful_downloads,
+                        "total_requested": len(request.image_urls),
+                        "success_rate": successful_downloads / len(request.image_urls),
+                    },
+                    metadata={
+                        "download_success_rate": successful_downloads
+                        / len(request.image_urls),
+                    },
+                )
 
-            statement_text = f"Statement: {request.statement}"
-            if request.is_social_media:
-                statement_text = f"Statement extracted from scraped social media, Check the images for the statements too: {request.statement} \n"
-                statement_text += "Sometimes the scraped image provided here might not contain the statements it might just be failed scraped image screenshot, like facebook logo or some unecessary HTML screenshot just ignore it if it's useless."
+        # Create the prompt for generating the enhanced statement
 
-            analysis_prompt = f"""
+        statement_text = f"Statement: {request.statement}"
+        if request.is_social_media:
+            statement_text = f"Statement extracted from scraped social media, Check the images for the statements too: {request.statement} \n"
+            statement_text += "Sometimes the scraped image provided here might not contain the statements it might just be failed scraped image screenshot, like facebook logo or some unecessary HTML screenshot just ignore it if it's useless."
+
+        analysis_prompt = f"""
 Analyze the following statement and any accompanying images. Generate a comprehensive 
 text representation that captures all verifiable claims from both the text and images.
 Also generate preview data (title and description) based on the content.
@@ -501,25 +736,57 @@ Guidelines for preview data:
 Your response should include both the enhanced statement and preview data.
 """
 
-            # Build the content list, including images if available
-            contents = []
+        # Build the content list, including images if available
+        contents = []
 
-            # Add images to the content if available
-            if image_objects:
-                contents.extend(image_objects)
+        # Add images to the content if available
+        if image_objects:
+            contents.extend(image_objects)
 
-            # Add the analysis prompt
-            contents.append(analysis_prompt)
+        # Add the analysis prompt
+        contents.append(analysis_prompt)
 
+        # Create generation span for the actual Gemini API call - nested within analysis span
+        with self.langfuse.start_as_current_generation(
+            name="gemini_fact_check_input_generation", model="gemini-2.5-flash"
+        ) as gen:
             gen.update(
-                input=contents,
-                model="gemini-2.5-flash",
+                input={
+                    "system_prompt": system_prompt,
+                    "prompt": analysis_prompt,
+                    "statement": request.statement,
+                    "image_count": len(image_objects),
+                    "is_social_media": request.is_social_media,
+                    "model_config": {
+                        "model": "gemini-2.5-flash",
+                        "temperature": 0.2,
+                        "response_format": "json",
+                        "thinking_budget": 3000,
+                    },
+                },
                 metadata={
                     "statement_length": len(request.statement),
-                    "image_url_count": (
-                        len(request.image_urls) if request.image_urls else 0
-                    ),
+                    "image_url_count": len(request.image_urls)
+                    if request.image_urls
+                    else 0,
+                    "successful_image_downloads": len(image_objects),
                     "is_social_media": request.is_social_media,
+                    "operation_type": "fact_check_input_generation",
+                    "response_format": "structured_json",
+                },
+            )
+
+            logger.info(
+                "Starting Gemini fact check input generation",
+                extra={
+                    "json_fields": {
+                        "statement_length": len(request.statement),
+                        "image_count": len(image_objects),
+                        "model": "gemini-2.5-flash",
+                        "temperature": 0.2,
+                        "operation": "gemini_fact_check_generation_start",
+                    },
+                    "labels": {"component": "gemini_client", "phase": "generation"},
                 },
             )
 
@@ -540,7 +807,6 @@ Your response should include both the enhanced statement and preview data.
                     config=config,
                     contents=contents,
                 )
-                print(response)
 
                 if not response or not response.text:
                     if (
@@ -559,31 +825,112 @@ Your response should include both the enhanced statement and preview data.
 
                 try:
                     result = FactCheckInputResponse.model_validate_json(response.text)
+
+                    # Enhanced output tracking with comprehensive details
                     gen.update(
+                        output={
+                            "enhanced_statement": result.enhanced_statement,
+                            "is_valid_for_fact_check": result.is_valid_for_fact_check,
+                            "has_preview_data": result.preview_data is not None,
+                            "success": True,
+                        },
                         usage_details={
-                            "input": response.usage_metadata.prompt_token_count,
-                            "output": response.usage_metadata.candidates_token_count,
-                            "cache_read_input_tokens": response.usage_metadata.cached_content_token_count,
+                            "prompt_tokens": response.usage_metadata.prompt_token_count,
+                            "completion_tokens": response.usage_metadata.candidates_token_count,
+                            "total_tokens": response.usage_metadata.total_token_count,
+                            "prompt_tokens_details": {
+                                "cached_tokens": response.usage_metadata.cached_content_token_count,
+                            },
+                        },
+                        metadata={
+                            "enhanced_statement_length": len(result.enhanced_statement),
+                            "is_valid_for_fact_check": result.is_valid_for_fact_check,
+                            "has_preview_data": result.preview_data is not None,
+                            "completion_reason": "success",
+                            "model_version": "gemini-2.5-flash",
                         },
                     )
+
+                    logger.info(
+                        "Gemini fact check input generation completed successfully",
+                        extra={
+                            "json_fields": {
+                                "enhanced_statement_length": len(
+                                    result.enhanced_statement
+                                ),
+                                "is_valid_for_fact_check": result.is_valid_for_fact_check,
+                                "has_preview_data": result.preview_data is not None,
+                                "input_tokens": response.usage_metadata.prompt_token_count,
+                                "output_tokens": response.usage_metadata.candidates_token_count,
+                                "total_tokens": response.usage_metadata.total_token_count,
+                                "operation": "gemini_fact_check_generation_success",
+                            },
+                            "labels": {
+                                "component": "gemini_client",
+                                "phase": "generation",
+                            },
+                        },
+                    )
+
                     return result
+
                 except Exception as e:
                     error_msg = f"Failed to parse FactCheckInputResponse: {e}"
-                    logger.error(error_msg)
+                    logger.error(
+                        "Gemini fact check input generation failed - parsing error",
+                        extra={
+                            "json_fields": {
+                                "error": str(e),
+                                "error_type": type(e).__name__,
+                                "raw_response_preview": response.text[:200]
+                                if response.text
+                                else None,
+                                "operation": "gemini_fact_check_generation_parse_error",
+                            },
+                            "labels": {
+                                "component": "gemini_client",
+                                "severity": "high",
+                            },
+                        },
+                    )
                     gen.update(
                         output=None,
                         metadata={
                             "error": error_msg,
-                            "raw_response": response.text[:500],
+                            "raw_response": response.text[:500]
+                            if response.text
+                            else None,
+                            "completion_reason": "parsing_failed",
                         },
                     )
                     raise e
 
             except Exception as e:
-                logger.error(e)
-                gen.update(output=None, metadata={"error": e})
+                error_msg = f"Gemini API call failed: {e}"
+                logger.error(
+                    "Gemini fact check input generation failed with exception",
+                    extra={
+                        "json_fields": {
+                            "error": str(e),
+                            "error_type": type(e).__name__,
+                            "operation": "gemini_fact_check_generation_exception",
+                        },
+                        "labels": {
+                            "component": "gemini_client",
+                            "severity": "high",
+                        },
+                    },
+                )
+                gen.update(
+                    output=None,
+                    metadata={
+                        "error": str(e),
+                        "completion_reason": "api_exception",
+                    },
+                )
                 raise e
 
+    @observe()
     @retry(
         wait=wait_random_exponential(multiplier=1, max=3),
         before_sleep=before_sleep_log(logger, logging.ERROR),
@@ -594,7 +941,8 @@ Your response should include both the enhanced statement and preview data.
         self, request: NotificationGenerationRequest
     ) -> Optional[NotificationGenerationResponse]:
         """
-        Generate an engaging notification title and description based on news content
+        Generate an engaging notification title and description based on news content.
+        Enhanced with comprehensive Langfuse observability.
 
         Args:
             request: The NotificationGenerationRequest containing news items and notification type
@@ -602,20 +950,51 @@ Your response should include both the enhanced statement and preview data.
         Returns:
             NotificationGenerationResponse with title, description, and relevance assessment
         """
+        # Create generation span with enhanced observability
         with self.langfuse.start_as_current_generation(
             name="gemini_notification_generation", model="gemini-2.5-flash"
         ) as gen:
             logger.info(
-                f"Generating notification for {len(request.news_items)} news items"
+                "Starting Gemini notification generation",
+                extra={
+                    "json_fields": {
+                        "news_items_count": len(request.news_items),
+                        "notification_type": request.notification_type,
+                        "tab": request.tab,
+                        "operation": "gemini_notification_generation_start",
+                    },
+                    "labels": {"component": "gemini_client", "phase": "notification"},
+                },
             )
 
+            # Enhanced input tracking for notification generation
             gen.update(
                 input={
+                    "news_items": [
+                        {
+                            "id": item.id,
+                            "content_length": len(item.content),
+                        }
+                        for item in request.news_items
+                    ],
                     "news_item_count": len(request.news_items),
                     "notification_type": request.notification_type,
                     "tab": request.tab,
-                    "model": "gemini-2.5-flash",
-                }
+                    "has_fact_check_data": request.fact_check_data is not None,
+                    "model_config": {
+                        "model": "gemini-2.5-flash",
+                        "temperature": 0.7,
+                        "response_format": "json",
+                        "thinking_budget": 3000,
+                    },
+                },
+                metadata={
+                    "news_item_count": len(request.news_items),
+                    "notification_type": request.notification_type,
+                    "tab": request.tab,
+                    "operation_type": "notification_generation",
+                    "has_fact_check_data": request.fact_check_data is not None,
+                },
             )
 
             # Check if this is for social media content generation
@@ -780,26 +1159,40 @@ Please follow the thinking process and generate the notification according to th
             )
 
             try:
-                gen.update(
-                    input=[analysis_prompt],
-                    model="gemini-2.5-flash",
-                    metadata={
-                        "notification_type": request.notification_type,
-                        "news_items_processed": len(request.news_items),
-                        "tab": request.tab,
+                logger.info(
+                    "Executing Gemini notification generation",
+                    extra={
+                        "json_fields": {
+                            "prompt_length": len(analysis_prompt),
+                            "model": "gemini-2.5-flash",
+                            "temperature": 0.7,
+                            "operation": "gemini_notification_api_call",
+                        },
+                        "labels": {"component": "gemini_client", "phase": "generation"},
                     },
                 )
+
                 response = await gemini_client.aio.models.generate_content(
                     model="gemini-2.5-flash",
                     config=config,
                     contents=[analysis_prompt],
                 )
 
+                # Enhanced usage tracking
                 gen.update(
                     usage_details={
-                        "input": response.usage_metadata.prompt_token_count,
-                        "output": response.usage_metadata.candidates_token_count,
-                        "cache_read_input_tokens": response.usage_metadata.cached_content_token_count,
+                        "prompt_tokens": response.usage_metadata.prompt_token_count,
+                        "completion_tokens": response.usage_metadata.candidates_token_count,
+                        "total_tokens": response.usage_metadata.total_token_count,
+                        "prompt_tokens_details": {
+                            "cached_tokens": response.usage_metadata.cached_content_token_count,
+                        },
+                    },
+                    metadata={
+                        "model_version": "gemini-2.5-flash",
+                        "completion_reason": "success"
+                        if response and response.text
+                        else "empty_response",
                     },
                 )
 
@@ -814,13 +1207,14 @@ Please follow the thinking process and generate the notification according to th
                         response.text
                     )
 
-                    # Prepare output logging
+                    # Prepare comprehensive output logging
                     output_data = {
                         "title": result.title,
                         "description": result.description,
                         "is_relevant": result.is_relevant,
                         "title_length": len(result.title),
                         "description_length": len(result.description),
+                        "success": True,
                     }
 
                     # Add social media card title to output if present
@@ -839,21 +1233,95 @@ Please follow the thinking process and generate the notification according to th
                             result.fact_check_summary
                         )
 
+                    # Update generation with comprehensive output data
+                    gen.update(
+                        output=output_data,
+                        metadata={
+                            "is_relevant": result.is_relevant,
+                            "has_social_media_card_title": bool(
+                                result.social_media_card_title
+                            ),
+                            "has_fact_check_summary": bool(result.fact_check_summary),
+                            "completion_reason": "success",
+                        },
+                    )
+
+                    logger.info(
+                        "Gemini notification generation completed successfully",
+                        extra={
+                            "json_fields": {
+                                "is_relevant": result.is_relevant,
+                                "title_length": len(result.title),
+                                "description_length": len(result.description),
+                                "has_social_media_card_title": bool(
+                                    result.social_media_card_title
+                                ),
+                                "has_fact_check_summary": bool(
+                                    result.fact_check_summary
+                                ),
+                                "input_tokens": response.usage_metadata.prompt_token_count,
+                                "output_tokens": response.usage_metadata.candidates_token_count,
+                                "total_tokens": response.usage_metadata.total_token_count,
+                                "operation": "gemini_notification_generation_success",
+                            },
+                            "labels": {
+                                "component": "gemini_client",
+                                "phase": "notification",
+                            },
+                        },
+                    )
+
                     return result
+
                 except Exception as e:
                     error_msg = f"Failed to parse NotificationGenerationResponse: {e}"
-                    logger.error(error_msg)
+                    logger.error(
+                        "Gemini notification generation failed - parsing error",
+                        extra={
+                            "json_fields": {
+                                "error": str(e),
+                                "error_type": type(e).__name__,
+                                "raw_response_preview": response.text[:200]
+                                if response.text
+                                else None,
+                                "operation": "gemini_notification_generation_parse_error",
+                            },
+                            "labels": {
+                                "component": "gemini_client",
+                                "severity": "high",
+                            },
+                        },
+                    )
                     gen.update(
                         output=None,
                         metadata={
                             "error": error_msg,
-                            "raw_response": response.text[:500],
+                            "raw_response": response.text[:500]
+                            if response.text
+                            else None,
+                            "completion_reason": "parsing_failed",
                         },
                     )
                     raise e
 
             except Exception as e:
-                logger.error(e)
-                logger.error("Error generating notification with Gemini")
-                gen.update(output=None, metadata={"error": str(e)})
+                error_msg = f"Gemini notification generation failed: {e}"
+                logger.error(
+                    "Gemini notification generation failed with exception",
+                    extra={
+                        "json_fields": {
+                            "error": str(e),
+                            "error_type": type(e).__name__,
+                            "operation": "gemini_notification_generation_exception",
+                        },
+                        "labels": {"component": "gemini_client", "severity": "high"},
+                    },
+                )
+                gen.update(
+                    output=None,
+                    metadata={
+                        "error": str(e),
+                        "completion_reason": "api_exception",
+                    },
+                )
                 raise e

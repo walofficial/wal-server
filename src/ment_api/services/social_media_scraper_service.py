@@ -315,6 +315,7 @@ async def scrape_social_media(
             with langfuse.start_as_current_span(
                 name="scrape_with_screenshot"
             ) as scrape_span:
+                scrape_span.update_trace(session_id=str(verification_id))
                 scrape_span.update(
                     input={
                         "url": social_url,
