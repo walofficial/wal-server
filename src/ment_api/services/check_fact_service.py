@@ -540,7 +540,7 @@ async def check_fact(
 
         sources_length = len(verification.get("sources", []))
         if sources_length == 1:
-            budget_tokens = 400000
+            budget_tokens = 30000
 
         # Step 3: Use Jina to perform the fact check with the enhanced statement
         # This creates its own spans within the jina fact checking service
