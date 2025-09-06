@@ -129,6 +129,7 @@ class LocationFeedPost(BaseModel):
     read_urls: Optional[List[str]] = []
     is_public: bool = False
     is_live: bool = False
+    live_ended_at: Optional[datetime] = None
     is_space: bool = False
     has_recording: bool = False
     livekit_room_name: Optional[str] = ""

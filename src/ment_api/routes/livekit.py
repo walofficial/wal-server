@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Optional
 
 import aiohttp
-from fastapi import APIRouter, Body, Header, Query, Request
+from fastapi import APIRouter, Body, Header, Query, Request, HTTPException
 from livekit.api.access_token import AccessToken, VideoGrants
 from livekit.api.ingress_service import IngressService
 from livekit.api.room_service import RoomService
@@ -15,13 +15,15 @@ from livekit.protocol.egress import (
     SegmentedFileOutput,
 )
 from livekit.protocol.ingress import CreateIngressRequest, IngressInput
-from livekit.protocol.room import RoomConfiguration, RoomEgress
+from livekit.protocol.room import CreateRoomRequest, RoomConfiguration, RoomEgress, DeleteRoomRequest
 from pydantic import BaseModel
 
 from ment_api.common.custom_object_id import CustomObjectId
 from ment_api.configurations.config import settings
 from ment_api.models.verification_state import VerificationState
 from ment_api.persistence import mongo
+from livekit.api.webhook import WebhookReceiver
+from livekit.api.access_token import TokenVerifier
 
 router = APIRouter(prefix="/live", tags=["live"])
 LIVEKIT_API_KEY = settings.livekit_api_key
@@ -63,24 +65,26 @@ ingress_service = IngressService(
 
 
 @router.post("/webhook", operation_id="live_webhook", response_model=bool)
-async def web(request: Request, authorization: str = Header(None)):
+async def web(request: Request,  authorization: str = Header(None)):
     rawBody = await request.body()
+    webhook_receiver = WebhookReceiver(
+        TokenVerifier(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+    )
+    print(rawBody)
     try:
         event_data_string = rawBody.decode()
-        event_data_json = json.loads(event_data_string)
+        event_data_json = webhook_receiver.receive(event_data_string, authorization)
         # Stringify the event data for logging/debugging
         # Verify and process the webhook event
-        event = event_data_json.get("event")
+        event = event_data_json.event
         if event == "room_started":
-            roomInfo = event_data_json.get("room")
-            roomName = roomInfo.get("name") if roomInfo else None
-            # Room start means that creator produced video stream and live is started
-            verification_doc = await mongo.verifications.find_one(
-                {"livekit_room_name": roomName}
-            )
-
+            roomInfo = event_data_json.room
+            roomName = roomInfo.name if roomInfo else None
+            print(roomName)
+            print("NAME")
+           
             await mongo.verifications.update_one(
-                {"_id": verification_doc["_id"]},
+                {"livekit_room_name": roomName},
                 {
                     "$set": {
                         "is_live": True,
@@ -90,15 +94,13 @@ async def web(request: Request, authorization: str = Header(None)):
             )
 
         if event == "egress_updated":
-            egressInfo = event_data_json.get("egressInfo")
-            roomName = egressInfo.get("roomName") if egressInfo else None
-            verification_doc = await mongo.verifications.find_one(
-                {"livekit_room_name": roomName}
-            )
-            status = egressInfo.get("status")
+            egressInfo = event_data_json.egress_info
+            roomName = egressInfo.room_name if egressInfo else None
+         
+            status = egressInfo.status
             if status == "EGRESS_ACTIVE":
                 await mongo.verifications.update_one(
-                    {"_id": verification_doc["_id"]},
+                    {"livekit_room_name": roomName},
                     {
                         "$set": {
                             # It means we can show this verification in the feed
@@ -108,40 +110,31 @@ async def web(request: Request, authorization: str = Header(None)):
                 )
 
         if event == "room_finished":
-            roomInfo = event_data_json.get("room")
-            roomName = roomInfo.get("name") if roomInfo else None
+            roomInfo = event_data_json.room
+            roomName = roomInfo.name if roomInfo else None
             # Means creator disconnected from the livestream, We should wait for egress_ended event after that
-            verification_doc = await mongo.verifications.find_one(
-                {"livekit_room_name": roomName}
-            )
             await mongo.verifications.update_one(
-                {"_id": verification_doc["_id"]},
+                {"livekit_room_name": roomName},
                 {
                     "$set": {
                         "is_live": False,
+                        "live_ended_at": datetime.now(timezone.utc),
                     }
                 },
             )
         if event == "egress_ended":
             # Egress can be aborted or completed, we need to check if it's completed
-            egressInfo = event_data_json.get("egressInfo")
-            roomName = egressInfo.get("roomName") if egressInfo else None
-            if egressInfo.get("status") == "EGRESS_COMPLETE":
+            egressInfo = event_data_json.egress_info
+            roomName = egressInfo.room_name if egressInfo else None
+            if egressInfo.status == "EGRESS_COMPLETE":
                 # Egress ended means that we have a recording and we can set has_recording to true
-                verification_doc = await mongo.verifications.find_one(
-                    {"livekit_room_name": roomName}
-                )
                 await mongo.verifications.update_one(
-                    {"_id": verification_doc["_id"]},
+                    {"livekit_room_name": roomName},
                     {"$set": {"has_recording": True, "is_live": False}},
                 )
             else:
-                # Egress aborted means that we don't have a recording, we should set has_recording to false
-                verification_doc = await mongo.verifications.find_one(
-                    {"livekit_room_name": roomName}
-                )
                 await mongo.verifications.update_one(
-                    {"_id": verification_doc["_id"]},
+                    {"livekit_room_name": roomName},
                     {
                         "$set": {
                             "has_recording": False,
@@ -153,8 +146,9 @@ async def web(request: Request, authorization: str = Header(None)):
                 )
 
         return True
-    except Exception:
-        raise
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Failed to process webhook")
 
 
 @router.get(
@@ -261,7 +255,7 @@ async def request_livekit_ingress(
                 max_participants=10,
                 egress=RoomEgress(
                     participant=AutoParticipantEgress(
-                        preset=EncodingOptionsPreset.PORTRAIT_H264_720P_30,
+                        preset=EncodingOptionsPreset.PORTRAIT_H264_1080P_60,
                         segment_outputs=[
                             SegmentedFileOutput(
                                 # Filename prefix is the each of the segment file prefix, that's why we make sure they are in a sub folder
@@ -318,8 +312,14 @@ async def start_live(
     )
 
     verification_doc = await mongo.verifications.insert_one(insert_doc)
-
     roomId = str(room_name)
+    room = await room_service.create_room(
+            CreateRoomRequest(
+            name=room_name,
+            empty_timeout=30,
+            max_participants=1000,
+        )
+    )
     token = (
         AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
         .with_identity("identity")
@@ -327,21 +327,21 @@ async def start_live(
         .with_room_config(
             RoomConfiguration(
                 max_participants=10,
-                egress=RoomEgress(
-                    participant=AutoParticipantEgress(
-                        preset=EncodingOptionsPreset.PORTRAIT_H264_720P_30,
-                        segment_outputs=[
-                            SegmentedFileOutput(
-                                # Filename prefix is the each of the segment file prefix, that's why we make sure they are in a sub folder
-                                filename_prefix=f"livekit-recording/{roomId}/{roomId}",
-                                segment_duration=3,
-                                gcp=GCPUpload(
-                                    bucket="ment-verification",
-                                ),
-                            ),
-                        ],
-                    )
-                ),
+                # egress=RoomEgress(
+                #     participant=AutoParticipantEgress(
+                #         preset=EncodingOptionsPreset.PORTRAIT_H264_720P_30,
+                #         segment_outputs=[
+                #             SegmentedFileOutput(
+                #                 # Filename prefix is the each of the segment file prefix, that's why we make sure they are in a sub folder
+                #                 filename_prefix=f"livekit-recording/{roomId}/{roomId}",
+                #                 segment_duration=3,
+                #                 gcp=GCPUpload(
+                #                     bucket="ment-verification",
+                #                 ),
+                #             ),
+                #         ],
+                #     )
+                # ),
             )
         )
         .with_grants(
@@ -357,3 +357,15 @@ async def start_live(
     insert_doc["_id"] = verification_doc.inserted_id
 
     return {"livekit_token": livekit_token, "room_name": room_name}
+
+
+@router.post("/stop-live", operation_id="stop_live")
+async def stop_live(
+    room_name: Annotated[str, Query(embed=True)],
+):
+    await mongo.verifications.update_one(
+        {"livekit_room_name": room_name},
+        {"$set": {"is_live": False}},
+    )
+    await room_service.delete_room(DeleteRoomRequest(room=room_name))
+    return {"message": "Live stream stopped successfully"}

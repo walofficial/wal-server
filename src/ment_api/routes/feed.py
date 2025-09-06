@@ -164,6 +164,7 @@ async def get_mixed_feed_pipeline(
                 "verified_media_playback": 1,
                 "assignee_user": 1,
                 "is_live": 1,
+                "live_ended_at": 1,
                 "is_space": 1,
                 "space_state": 1,
                 "image_gallery_with_dims": 1,

@@ -136,8 +136,7 @@ async def stop_stream(
         {"livekit_room_name": request_body.livekit_room_name},
         {
             "$set": {
-                "space_state": "ended",
-                "space_ended_at": datetime.now(timezone.utc),
+                "live_ended_at": datetime.now(timezone.utc),
             }
         },
     )

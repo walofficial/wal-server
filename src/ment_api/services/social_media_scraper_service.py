@@ -48,7 +48,7 @@ SOCIAL_MEDIA_PATTERNS = {
 }
 
 # Maximum file size in bytes (300KB)
-MAX_FILE_SIZE = 300 * 1024
+MAX_FILE_SIZE = 100 * 1024
 
 
 def compress_image(image_data: bytes, max_size: int = MAX_FILE_SIZE) -> bytes:
@@ -641,7 +641,7 @@ async def get_enhanced_screenshot(verification_id: str) -> None:
         # Get verification data for additional context
 
         # Build screenshot URL
-        screenshot_url = f"https://{settings.wal_url}/status/{verification_id}/facebook-mock?static=true"
+        screenshot_url = f"https://wal.ge/status/{verification_id}/facebook-mock?static=true"
 
         # Capture screenshot using ScrapeDoClient
         result = await client.scrape_with_screenshot(
@@ -654,9 +654,9 @@ async def get_enhanced_screenshot(verification_id: str) -> None:
         )
 
         screenshot_data = result.get("screenshot_data")
-
+       
         image_screenshot = await upload_image(
-            file=screenshot_data,
+            file=compress_image(screenshot_data),
             destination_file_name=f"screenshot_enhanced_{verification_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg",
             content_type="image/jpeg",
         )

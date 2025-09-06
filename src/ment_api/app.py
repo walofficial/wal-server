@@ -51,12 +51,13 @@ class SupabaseAuthMiddleware(BaseHTTPMiddleware):
         request.state.is_anonymous = x_anonymous_header == "true"
 
         # Public endpoints allowlist (GET only)
-        is_public_get = method == "GET" and (
+        is_public_get = method == "GET" or method == "POST" and (
             path == "/user/get-verification"
             or path.startswith("/user/feed/location-feed/")
             or path.startswith("/live-actions/verification-likes/")
             or path.startswith("/live-actions/get-impressions/")
             or path.startswith("/get-country")
+            or path.startswith("/live/webhook")
             or path.startswith("/health")
         )
 
