@@ -5,16 +5,20 @@ from typing import Optional
 
 import httpx
 from langfuse import observe
+from langfuse.api.resources.ingestion.types import usage_details
 from openai import AsyncOpenAI
 from pydantic import ValidationError
-
+from ment_api.services.external_clients.langfuse_client import (
+    langfuse,
+)
+from google.genai.types import GenerateContentConfig, Part, ThinkingConfig
 from ment_api.configurations.config import settings
 from ment_api.models.fact_checking_models import (
     FactCheckingResult,
     FactCheckRequest,
     JinaFactCheckResponse,
 )
-
+from ment_api.services.external_clients.gemini_client import gemini_client
 from groq import Groq
 
 client = Groq(
@@ -329,16 +333,11 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
                     "content": " You are an expert fact-checker tasked with thoroughly analyzing the following post details. Follow the step-by-step process below to ensure accuracy and completeness. \n",
                 },
                 {"role": "user", "content": fact_checking_prompt},
-                {
-                    "role": "user",
-                    "content": f"Return JSON like in this schema format: {get_jina_response_format()}",
-                },
             ],
             temperature=1,
-            max_completion_tokens=4201,
+            max_completion_tokens=6000,
             top_p=1,
             stream=False,
-            response_format={"type": "json_object"},
             stop=None,
             compound_custom={
                 "tools": {
@@ -349,13 +348,15 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
                 "country": "georgia",
             }
         )
-        print(completion.choices[0].message.content)
-        response_text = json.loads(completion.choices[0].message.content)
+        
+        response_text = completion.choices[0].message.content
+
+        response_json = await generate_json_from_fact_check_response(response_text)
 
 
         try:
             jina_response_parsed: JinaFactCheckResponse = (
-                JinaFactCheckResponse.model_validate(response_text)
+                JinaFactCheckResponse.model_validate(response_json)
             )
 
             logger.info(
@@ -458,3 +459,43 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
             exc_info=True,
         )
         return None
+
+
+@observe(as_type="generation")
+async def generate_json_from_fact_check_response(
+    response_text: str,
+) -> Optional[str]:
+    contents = [
+        "Return JSON from this markdown response:" + response_text
+    ]
+
+    langfuse.update_current_generation(
+        input=contents,
+        model="gemini-2.5-flash",
+        metadata={
+            "response_text_length": len(response_text),
+        },
+    )
+    response_json = await gemini_client.aio.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=contents,
+        config=GenerateContentConfig(
+            response_mime_type="application/json",
+            max_output_tokens=8000,
+            thinking_config=ThinkingConfig(
+                thinking_budget=1000,
+            ),
+            system_instruction="You are an expert JSON generator tasked with generating a JSON from the provided markdown response.",
+            response_schema=JinaFactCheckResponse.model_json_schema(),
+        ),
+    )
+
+    langfuse.update_current_generation(
+        usage_details={
+            "input": response_json.usage_metadata.prompt_token_count,
+            "output": response_json.usage_metadata.candidates_token_count,
+            "cache_read_input_tokens": response_json.usage_metadata.cached_content_token_count,
+        },
+    )
+
+    return response_json.parsed
