@@ -1,5 +1,5 @@
 import logging
-
+import asyncio
 import jwt
 import socketio
 from fastapi import FastAPI, Request
@@ -58,6 +58,7 @@ class SupabaseAuthMiddleware(BaseHTTPMiddleware):
             or path.startswith("/live-actions/get-impressions/")
             or path.startswith("/get-country")
             or path.startswith("/health")
+            or path.startswith("/test-instance")
         )
 
         if is_public_get and (not auth_header or not auth_header.startswith("Bearer ")):
@@ -162,6 +163,13 @@ async def get_country(request: Request):
         ip_address=ip,
         detection_method=method,
     )
+
+# Write a test endppint to test a cloud run concurrect request config this method should be  resolve only in 10 seconds
+@app.get("/test-instance", operation_id="test_instance")
+async def test_instance():
+    await asyncio.sleep(30) 
+    return {"message": "Test instance"}
+
 
 
 def get_ip_detection_method(request: Request, detected_ip: str) -> str:
