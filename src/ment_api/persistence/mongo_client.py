@@ -36,10 +36,30 @@ async def check_mongo_connection() -> None:
     is_ok = response.get("ok") in [1, True, 1.0]
 
     if not is_ok:
-        logger.error(f"MongoDB ping returned invalid response: {response}")
+        logger.error(
+            "MongoDB ping returned invalid response",
+            extra={
+                "json_fields": {
+                    "operation": "mongodb_ping_check",
+                    "status": "failed",
+                    "response": response,
+                },
+                "labels": {"component": "mongodb_client"},
+            },
+        )
         raise ConnectionError(f"MongoDB ping failed: invalid response {response}")
 
-    logger.info(f"MongoDB connection verified: {response}")
+    logger.info(
+        "MongoDB connection verified",
+        extra={
+            "json_fields": {
+                "operation": "mongodb_ping_check",
+                "status": "success",
+                "ok": response.get("ok"),
+            },
+            "labels": {"component": "mongodb_client"},
+        },
+    )
 
 
 async def close_mongo_client() -> None:
