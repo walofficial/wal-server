@@ -1,5 +1,4 @@
 ---
-globs: *.py
 description: "Concrete Python logging implementation patterns"
 ---
 
