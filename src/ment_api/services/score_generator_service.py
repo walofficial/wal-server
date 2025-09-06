@@ -273,29 +273,6 @@ async def generate_score(
         },
     )
 
-    # # Enhanced input tracking for score generation
-    # langfuse.update_current_generation(
-    #     input={
-    #         "article_statements": article_statements,
-    #         "fact_check_reason": fact_check_reason,
-    #         "prompt_template": "score_generation_with_examples",
-    #         "model_config": {
-    #             "model": "gemini-2.5-flash-lite",
-    #             "response_format": "json",
-    #             "thinking_budget": 5000,
-    #             "temperature": None,  # Default temperature
-    #         },
-    #     },
-    #     metadata={
-    #         "article_statements_length": len(article_statements),
-    #         "fact_check_reason_length": len(fact_check_reason),
-    #         "prompt_length": len(generate_score_user_prompt),
-    #         "examples_included": True,
-    #         "operation_type": "score_generation",
-    #         "response_format": "structured_json",
-    #     },
-    # )
-
     with langfuse.start_as_current_generation(
         name="gemini_score_generation", model="gemini-2.5-flash-lite"
     ) as gen:
