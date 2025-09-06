@@ -70,7 +70,6 @@ async def web(request: Request,  authorization: str = Header(None)):
     webhook_receiver = WebhookReceiver(
         TokenVerifier(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
     )
-    print(rawBody)
     try:
         event_data_string = rawBody.decode()
         event_data_json = webhook_receiver.receive(event_data_string, authorization)
@@ -80,9 +79,6 @@ async def web(request: Request,  authorization: str = Header(None)):
         if event == "room_started":
             roomInfo = event_data_json.room
             roomName = roomInfo.name if roomInfo else None
-            print(roomName)
-            print("NAME")
-           
             await mongo.verifications.update_one(
                 {"livekit_room_name": roomName},
                 {
@@ -327,21 +323,21 @@ async def start_live(
         .with_room_config(
             RoomConfiguration(
                 max_participants=10,
-                # egress=RoomEgress(
-                #     participant=AutoParticipantEgress(
-                #         preset=EncodingOptionsPreset.PORTRAIT_H264_720P_30,
-                #         segment_outputs=[
-                #             SegmentedFileOutput(
-                #                 # Filename prefix is the each of the segment file prefix, that's why we make sure they are in a sub folder
-                #                 filename_prefix=f"livekit-recording/{roomId}/{roomId}",
-                #                 segment_duration=3,
-                #                 gcp=GCPUpload(
-                #                     bucket="ment-verification",
-                #                 ),
-                #             ),
-                #         ],
-                #     )
-                # ),
+                egress=RoomEgress(
+                    participant=AutoParticipantEgress(
+                        preset=EncodingOptionsPreset.PORTRAIT_H264_720P_30,
+                        segment_outputs=[
+                            SegmentedFileOutput(
+                                # Filename prefix is the each of the segment file prefix, that's why we make sure they are in a sub folder
+                                filename_prefix=f"livekit-recording/{roomId}/{roomId}",
+                                segment_duration=3,
+                                gcp=GCPUpload(
+                                    bucket="ment-verification",
+                                ),
+                            ),
+                        ],
+                    )
+                ),
             )
         )
         .with_grants(

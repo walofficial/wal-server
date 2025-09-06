@@ -540,7 +540,6 @@ Your response should include both the enhanced statement and preview data.
                     config=config,
                     contents=contents,
                 )
-                print(response)
 
                 if not response or not response.text:
                     if (

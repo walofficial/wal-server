@@ -30,7 +30,6 @@ from ment_api.routes.chat import router as chat_router
 from ment_api.routes.chat import sio
 from ment_api.services.country_service import get_country_for_request
 
-print("Initializing fastapi")
 app = FastAPI(lifespan=lifespan)
 
 # GeoIP2 reader is initialized in country_service
