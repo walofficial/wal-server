@@ -610,7 +610,6 @@ async def save_news(
             primary_url = item.image_url or (
                 item.found_image_urls[0] if item.found_image_urls else None
             )
-            print(primary_url)
             if primary_url:
                 unique_name = f"{item.id}_{uuid.uuid4().hex}"
                 upload_tasks.append(
