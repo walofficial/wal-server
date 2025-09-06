@@ -1,0 +1,45 @@
+---
+alwaysApply: false
+---
+# Context7 Documentation Fetching
+
+## Automatic Usage Triggers
+
+Always use Context7 MCP tools (`mcp_context7_resolve-library-id` and `mcp_context7_get-library-docs`) when:
+
+1. **Code Generation**: User requests code that involves external libraries, frameworks, or APIs
+2. **Setup/Configuration**: User needs help with installation, configuration, or setup steps for any technology
+3. **Library/API Documentation**: User asks about how to use specific libraries, their methods, parameters, or examples
+4. **Framework Usage**: User needs guidance on framework-specific patterns, best practices, or implementation details
+5. **Integration Tasks**: User wants to integrate with third-party services or libraries
+6. **Troubleshooting**: User encounters issues with library usage and needs current documentation
+
+## Implementation Pattern
+
+1. **Always resolve library ID first**: Use `mcp_context7_resolve-library-id` to get the correct Context7-compatible library ID
+2. **Fetch relevant documentation**: Use `mcp_context7_get-library-docs` with appropriate topic focus when possible
+3. **Don't wait for explicit requests**: Proactively fetch documentation when the context suggests it would be helpful
+
+## Examples of Automatic Usage
+
+- User asks: "How do I set up FastAPI with authentication?" → Automatically fetch FastAPI docs
+- User requests: "Create a React component with hooks" → Automatically fetch React docs focused on hooks
+- User mentions: "I'm getting an error with MongoDB connection" → Automatically fetch MongoDB docs
+- User asks: "Configure Redis for caching" → Automatically fetch Redis configuration docs
+
+## Topic Focusing
+
+When using `mcp_context7_get-library-docs`, include a `topic` parameter when the user's request is specific:
+
+- Authentication → topic: "authentication" or "auth"
+- Database operations → topic: "database" or "queries"
+- API routes → topic: "routing" or "endpoints"
+- Configuration → topic: "configuration" or "setup"
+
+## Token Management
+
+- Use default token limits unless dealing with complex integrations
+- For comprehensive setup guides, consider higher token limits (15000-20000)
+- For specific function usage, standard limits (10000) are sufficient
+
+Remember: The goal is to provide accurate, up-to-date information without the user needing to explicitly request documentation lookup.
