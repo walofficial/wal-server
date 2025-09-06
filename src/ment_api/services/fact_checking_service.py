@@ -19,9 +19,9 @@ from ment_api.models.fact_checking_models import (
     JinaFactCheckResponse,
 )
 from ment_api.services.external_clients.gemini_client import gemini_client
-from groq import Groq
+from groq import AsyncGroq
 
-client = Groq(
+client = AsyncGroq(
     default_headers={"Groq-Model-Version": "latest"}, api_key=settings.groq_key
 )
 
@@ -325,7 +325,7 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
             },
         )
 
-        completion = client.chat.completions.create(
+        completion = await client.chat.completions.create(
             model="groq/compound",
             messages=[
                 {
