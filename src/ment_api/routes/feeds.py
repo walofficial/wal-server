@@ -1334,6 +1334,7 @@ async def generate_social_media_content(
                 width=1920,
                 height=1080,
                 particularScreenShot="#static-view",
+                waitForImages=True,
             )
 
             screenshot_data = result.get("screenshot_data")

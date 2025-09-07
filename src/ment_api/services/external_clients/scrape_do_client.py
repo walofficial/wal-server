@@ -197,6 +197,7 @@ class ScrapeDoClient:
         width: Optional[int] = None,
         height: Optional[int] = None,
         particularScreenShot: str = None,
+        waitForImages: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         Make a single call to scrape.do to get both content and screenshot
@@ -230,8 +231,6 @@ class ScrapeDoClient:
 
         # Add playWithBrowser parameter to remove the specified element
         play_with_browser_script = [
-            # Page is not fully loaded still, this is necessary for now
-            {"Action": "Wait", "Timeout": 5000},
             # Remove the ƒacebook login modal when the page loads as it obstructs actual post.
             {
                 "Action": "Execute",
@@ -245,6 +244,12 @@ class ScrapeDoClient:
                 """,
             },
         ]
+
+        if waitForImages:
+            play_with_browser_script.append({ "Action": "WaitForRequestCompletion", "UrlPattern": "*cdn.wal.ge/video-verifications*", "Timeout": 10000 })
+        else:
+            play_with_browser_script.append({ "Action": "Wait", "Timeout": 5000 })
+
         query_params.append(("playWithBrowser", json.dumps(play_with_browser_script)))
 
         # Only add customHeaders for non-Facebook URLs

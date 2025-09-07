@@ -652,6 +652,7 @@ async def get_enhanced_screenshot(verification_id: str) -> None:
             width=1920,
             height=1080,
             particularScreenShot="#static-view",
+            waitForImages=True,
         )
 
         screenshot_data = result.get("screenshot_data")
@@ -677,3 +678,5 @@ async def get_enhanced_screenshot(verification_id: str) -> None:
                 }
             },
         )
+
+        return image_screenshot.url
