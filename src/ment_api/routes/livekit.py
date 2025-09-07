@@ -258,6 +258,7 @@ async def request_livekit_ingress(
                                 filename_prefix=f"livekit-recording/{roomId}/{roomId}",
                                 segment_duration=3,
                                 gcp=GCPUpload(
+                                    credentials="",
                                     bucket="ment-verification",
                                 ),
                             ),
