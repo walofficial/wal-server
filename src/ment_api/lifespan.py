@@ -1,4 +1,5 @@
 import asyncio
+import aiohttp
 import logging
 from contextlib import asynccontextmanager
 
@@ -36,6 +37,31 @@ logger = logging.getLogger(__name__)
 async def lifespan(local_app: FastAPI):
     await initialize_mongo_client()
     await initialize_db()
+
+    # Initialize LiveKit clients within the event loop context
+    session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False))
+    try:
+        from livekit.api.room_service import RoomService
+        from livekit.api.ingress_service import IngressService
+        from ment_api.configurations.config import settings as _settings
+
+        local_app.state.livekit_session = session
+        local_app.state.livekit_room_service = RoomService(
+            session=session,
+            url=_settings.livekit_url,
+            api_key=_settings.livekit_api_key,
+            api_secret=_settings.livekit_api_secret,
+        )
+        local_app.state.livekit_ingress_service = IngressService(
+            session=session,
+            url=_settings.livekit_url,
+            api_key=_settings.livekit_api_key,
+            api_secret=_settings.livekit_api_secret,
+        )
+    except Exception:
+        # If LiveKit init fails, ensure session is closed and re-raise
+        await session.close()
+        raise
 
     message_state_task = init_message_state_task()
 
@@ -134,5 +160,14 @@ async def lifespan(local_app: FastAPI):
 
     # Close MongoDB connection
     await close_mongo_client()
+
+    # Close LiveKit aiohttp session
+    try:
+        livekit_session = getattr(local_app.state, "livekit_session", None)
+        if livekit_session is not None:
+            await livekit_session.close()
+            logger.info("LiveKit HTTP session closed")
+    except Exception as e:
+        logger.error(f"Error closing LiveKit session: {e}")
 
     logger.info("Application shutdown complete")
