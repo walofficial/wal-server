@@ -105,7 +105,7 @@ notifications = BaseMongo("notifications")
 friend_requests = BaseMongo("friend_requests")
 friendships = BaseMongo("friendships")
 chat_rooms = BaseMongo("chat_rooms")
-feed_location_mappings = BaseMongo("feed_location_mappings")
+feed_locations = BaseMongo("feed_locations")
 live_users = BaseMongo("live_users")
 subscribed_space_users = BaseMongo("subscribed_space_users")
 comments = BaseMongo("comments")
@@ -118,9 +118,6 @@ external_articles = BaseMongo("external_articles")
 
 async def initialize_db() -> None:
     logger.info(f"Initializing database: {mongo_client.db}")
-    await mongo_client.db["feed_location_mappings"].create_index(
-        [("feed_ids", DESCENDING)], unique=True
-    )
     await mongo_client.db["notifications"].create_indexes(
         [
             IndexModel([("to_user_id", ASCENDING), ("created_at", DESCENDING)]),
@@ -220,6 +217,13 @@ async def initialize_db() -> None:
 
     await mongo_client.db["external_articles"].create_index(
         [("external_id", ASCENDING)], unique=True
+    )
+    # Geospatial indexes for fast location lookups
+    await mongo_client.db["feed_locations"].create_indexes(
+        [
+            IndexModel([("location", "2dsphere")]),
+            IndexModel([("feed_id", ASCENDING)]),
+        ]
     )
     # Ensure Atlas Search index on verifications collection
     try:
