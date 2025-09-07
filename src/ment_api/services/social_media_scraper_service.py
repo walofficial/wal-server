@@ -654,6 +654,7 @@ async def get_enhanced_screenshot(verification_id: str) -> None:
             particularScreenShot="#static-view",
             waitForImages=True,
             geoCode="is",
+            super=False,
         )
 
         screenshot_data = result.get("screenshot_data")
