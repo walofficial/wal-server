@@ -326,13 +326,14 @@ async def start_live(
                 max_participants=10,
                 egress=RoomEgress(
                     participant=AutoParticipantEgress(
-                        preset=EncodingOptionsPreset.PORTRAIT_H264_720P_30,
+                        preset=EncodingOptionsPreset.PORTRAIT_H264_1080P_60,
                         segment_outputs=[
                             SegmentedFileOutput(
                                 # Filename prefix is the each of the segment file prefix, that's why we make sure they are in a sub folder
                                 filename_prefix=f"livekit-recording/{roomId}/{roomId}",
                                 segment_duration=3,
                                 gcp=GCPUpload(
+                                    credentials="",
                                     bucket="ment-verification",
                                 ),
                             ),
