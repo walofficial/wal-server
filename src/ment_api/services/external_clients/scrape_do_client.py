@@ -198,6 +198,7 @@ class ScrapeDoClient:
         height: Optional[int] = None,
         particularScreenShot: str = None,
         waitForImages: bool = False,
+        geoCode: str = "ge",
     ) -> Optional[Dict[str, Any]]:
         """
         Make a single call to scrape.do to get both content and screenshot
@@ -216,14 +217,16 @@ class ScrapeDoClient:
         query_params = [
             ("token", settings.scrape_do_token),
             ("url", scrape_url),
-            ("geoCode", "GE"),
             ("super", "true"),
             ("render", "true"),
             ("returnJSON", "true"),
             ("output", "markdown"),
             ("device", "tablet"),
             ("blockResources", "false"),
+            ("geoCode", geoCode),
         ]
+        
+        
 
         # Add fullScreenshot parameter if full_page is True
         if full_page:

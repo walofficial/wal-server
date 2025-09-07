@@ -1,6 +1,7 @@
 import asyncio
 import io
 import logging
+from typing import Optional
 
 from PIL import Image
 
@@ -8,6 +9,7 @@ from ment_api.configurations.config import settings
 from ment_api.models.image_with_dims import ImageWithDims
 from ment_api.services.external_clients.langfuse_client import langfuse
 from ment_api.services.google_storage_service import client
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,10 @@ def _upload_image_sync(
         blob = bucket.blob(
             f"{settings.storage_video_verification_path}{destination_file_name}"
         )
+        # Set cache headers before upload so they are persisted
+        # 1 year immutable cache for content-addressed filenames (UUIDs)
+        blob.cache_control = "public, max-age=31536000, immutable"
+        blob.content_type = content_type
         blob.upload_from_file(io.BytesIO(file), content_type=content_type)
 
         return ImageWithDims(
@@ -48,6 +54,8 @@ def _upload_image_sync(
         blob = bucket.blob(
             f"{settings.storage_video_verification_path}{destination_file_name}"
         )
+        blob.cache_control = "public, max-age=31536000, immutable"
+        blob.content_type = content_type
         blob.upload_from_file(io.BytesIO(file), content_type=content_type)
 
         return ImageWithDims(
@@ -64,6 +72,7 @@ async def upload_image(
     """
     Async function to upload image to cloud storage.
     Runs blocking operations in thread pool to maintain asyncio compatibility.
+    Also sets long-lived cache headers and optionally prewarms CDN.
     """
     with langfuse.start_as_current_span(name="cloud-storage-upload") as upload_span:
         upload_span.update(
