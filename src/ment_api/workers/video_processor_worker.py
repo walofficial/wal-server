@@ -157,7 +157,7 @@ async def process_video(
     audio_gcs_uri = build_gcs_uri(audio_blob_path, GCS_BUCKET_NAME)
 
     # Check if audio blob already exists in GCS
-    if check_blob_exists(audio_blob_path, GCS_BUCKET_NAME):
+    if await check_blob_exists(audio_blob_path, GCS_BUCKET_NAME):
         logger.info(
             f"Audio blob already exists at {audio_gcs_uri}, skipping download and upload"
         )

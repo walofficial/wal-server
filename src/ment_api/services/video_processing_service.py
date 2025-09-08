@@ -70,6 +70,7 @@ async def generate_audio_transcript(
                     include_thoughts=False,
                     thinking_budget=0,
                 ),
+                audio_timestamp=True,
             ),
         )
 
