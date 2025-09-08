@@ -609,7 +609,7 @@ async def scrape_social_media(
                     raise Exception("No content in re-scrape result")
                 markdown_content = scrape_result["content"]
                 parsed_content = await parse_social_media_content(
-                    markdown_content, platform, social_url, full_page_screenshot.url
+                    markdown_content, platform, social_url, screenshot_data
                 )
             except Exception as re_err:
                 logger.warning(f"Re-scrape attempt failed: {re_err}")
