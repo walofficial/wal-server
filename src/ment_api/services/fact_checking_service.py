@@ -137,8 +137,11 @@ def create_fact_checking_prompt(details: str) -> str:
     )
     prompt = f"""
     The current date is: {current_date}
+    
     You are an expert fact-checker tasked with thoroughly analyzing the following post details. Follow the step-by-step process below to ensure accuracy and completeness. 
 
+Before you start the fact checking process, make sure to gather all the real time information you need for the persons, places, events, etc. that are mentioned in the post details. For example someone might have become a president or something today or someone made a statement maybe make sure to gather information from search instead of using training data.
+You should just use this real time information as a context to details below and not in a actual response markdown.
     <details>
 {details}
 </details>
