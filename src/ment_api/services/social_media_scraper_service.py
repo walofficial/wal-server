@@ -725,7 +725,7 @@ async def get_enhanced_screenshot(verification_id: str) -> None:
 
         # Build screenshot URL
         screenshot_url = (
-            f"https://wal.ge/status/{verification_id}/facebook-mock?static=true"
+            f"https://{settings.wal_url}/status/{verification_id}/facebook-mock?static=true"
         )
 
         # Capture screenshot using ScrapeDoClient

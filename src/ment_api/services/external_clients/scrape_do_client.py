@@ -1,17 +1,19 @@
-from contextlib import asynccontextmanager
-import logging
-from typing import Optional, Dict, Any
-import httpx
-from ment_api.configurations.config import settings
-import json
 import base64
+import json
+import logging
+from contextlib import asynccontextmanager
+from typing import Any, Dict, Optional
+
+import httpx
 from tenacity import (
-    retry,
-    wait_random_exponential,
-    before_sleep_log,
     RetryError,
+    before_sleep_log,
+    retry,
     stop_after_attempt,
+    wait_random_exponential,
 )
+
+from ment_api.configurations.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +226,7 @@ class ScrapeDoClient:
             ("blockResources", "false"),
             ("geoCode", geoCode),
         ]
-        
+
         if super:
             query_params.append(("super", "true"))
 
@@ -249,17 +251,19 @@ class ScrapeDoClient:
         ]
 
         if waitForImages:
-            play_with_browser_script.append({ "Action": "Wait", "Timeout": 3000 })
-            play_with_browser_script.append({
-    "action": "Execute",
-    "execute": "(async()=>{await Promise.all(Array.from(document.images).map((e=>e.complete?Promise.resolve():new Promise((o=>{e.onload=e.onerror=o}))))))})();"
-  })
-            play_with_browser_script.append({ "Action": "Wait", "Timeout": 1000 })
-            
+            play_with_browser_script.append({"Action": "Wait", "Timeout": 3000})
+            play_with_browser_script.append(
+                {
+                    "action": "Execute",
+                    "execute": "(async()=>{await Promise.all(Array.from(document.images).map((e=>e.complete?Promise.resolve():new Promise((o=>{e.onload=e.onerror=o}))))))})();",
+                }
+            )
+            play_with_browser_script.append({"Action": "Wait", "Timeout": 1000})
+
             pass
             # play_with_browser_script.append({ "Action": "WaitForRequestCompletion", "UrlPattern": "*cdn.wal.ge/video-verifications/*", "Timeout": 30000 })
         else:
-            play_with_browser_script.append({ "Action": "Wait", "Timeout": 5000 })
+            play_with_browser_script.append({"Action": "Wait", "Timeout": 5000})
             if wait_until:
                 query_params.append(("waitUntil", wait_until))
 
@@ -268,8 +272,6 @@ class ScrapeDoClient:
         # Only add customHeaders for non-Facebook URLs
         if "facebook.com" not in scrape_url and not waitForImages:
             query_params.append(("customHeaders", "false"))
-
-   
 
         if width:
             query_params.append(("width", str(width)))
@@ -297,6 +299,27 @@ class ScrapeDoClient:
                 ):
                     image_b64 = json_response["screenShots"][0]["image"]
                     result["screenshot_data"] = base64.b64decode(image_b64)
+                    logger.info(
+                        "Scrape with screenshot completed successfully",
+                        extra={
+                            "json_fields": {
+                                "screenshot_data_size": len(result["screenshot_data"]),
+                                "operation": "scrape_screenshot",
+                            },
+                            "labels": {"component": "scrape_do_client"},
+                        },
+                    )
+                else:
+                    logger.warning(
+                        "Scrape with screenshot failed",
+                        extra={
+                            "json_fields": {
+                                "operation": "scrape_screenshot",
+                                "has_screenshots": False,
+                            },
+                            "labels": {"component": "scrape_do_client"},
+                        },
+                    )
 
                 return result
             else:
