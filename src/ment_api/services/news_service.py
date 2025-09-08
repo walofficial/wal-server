@@ -2,13 +2,14 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import List, Optional
 
 import httpx
 from bson import ObjectId
 from google.genai.types import GenerateContentConfig, ThinkingConfig
+from langfuse import observe
 from pydantic import TypeAdapter
 from pymongo.errors import BulkWriteError
 from tenacity import (
@@ -18,7 +19,6 @@ from tenacity import (
     wait_random_exponential,
 )
 
-from langfuse import observe
 from ment_api.configurations.config import settings
 from ment_api.events.news_created_event import NewsCreatedEvent
 from ment_api.models.location_feed_post import NewsFeedPost
@@ -30,7 +30,7 @@ from ment_api.persistence.models.external_article import (
     NewsCategory,
     NewsSource,
 )
-from ment_api.persistence.mongo import create_translation_projection
+from ment_api.services.embedding_service import embedding_service
 from ment_api.services.external_clients.cloud_flare_client import upload_image
 from ment_api.services.external_clients.gemini_client import gemini_client
 from ment_api.services.external_clients.langfuse_client import (
@@ -55,6 +55,7 @@ from ment_api.services.external_clients.scrape_news_netgazeti_client import (
 from ment_api.services.external_clients.scrape_news_publika_client import (
     get_scrape_publika_news_client,
 )
+from ment_api.services.news_deduplication_service import deduplicate_news_items
 from ment_api.services.pub_sub_service import publish_message
 
 logger = logging.getLogger(__name__)
@@ -190,16 +191,11 @@ async def generate_news_from_site_apis(
             else:
                 logger.info("No news items to insert into external_articles")
 
-            # Get titles of already generated news to avoid duplicates
-            already_generated_news_titles = await get_todays_news_titles()
-            logger.info(
-                f"Already generated news titles: {already_generated_news_titles}"
-            )
+            # NEW: Deduplicate news items using vector similarity
+            filtered_news = await deduplicate_news_items(combined_news)
 
-            # Process the scraped content into structured news items
-            news_response = await structurize_scraped_news(
-                combined_news, already_generated_news_titles
-            )
+            # Process the filtered content into structured news items
+            news_response = await structurize_scraped_news(filtered_news)
 
             # Save the news items and return their IDs
             return await save_news(news_response, assignee_user_id, feed_id)
@@ -261,7 +257,6 @@ Neutral sources: {neutral_sources}
 - 3-5 bullet points highlighting key information synthesized from ALL articles covering the same event
 - Separate sections for government, opposition, and neutral perspectives (only include sections when sources of that type are present)
 - Raw markdown output (NOT in code blocks)
-- No overlap with events in <excluded_titles>
 - Use exact details_url values from input for source references
 - MANDATORY: Group articles discussing the same event into single news items - never create separate news items for the same event
 - Each news item must represent a complete synthesis of all available sources covering that event
@@ -417,7 +412,6 @@ Before finalizing, verify each news item:
 - [ ] Word counts within specified limits (15-25 words for main points, 10-20 words for perspectives)
 - [ ] Main bullet points: 3-5 total, perspective sections: up to 4 bullet points each maximum
 - [ ] Source references include ALL sources used, with exact details_url from input
-- [ ] No overlap with <excluded_titles>
 - [ ] Content is raw markdown (no code blocks)
 - [ ] Each news item is more comprehensive than any individual source article
 - [ ] **CRITICAL**: Government/Opposition/Neutral summary fields contain ONLY the bullet points from their respective sections
@@ -436,9 +430,6 @@ Before finalizing, verify each news item:
 Generate {max_news_items_count} items, prioritizing quality and distinctiveness over quantity.
 </focus_priorities>
 
-<excluded_titles>
-{excluded_titles}
-</excluded_titles>
 
 <scraped_content>
 {formatted_scraped_results}
@@ -453,7 +444,7 @@ Generate {max_news_items_count} items, prioritizing quality and distinctiveness 
     stop=stop_after_attempt(4),
 )
 async def structurize_scraped_news(
-    news_items: List[NewsItem], excluded_titles: List[str]
+    news_items: List[NewsItem],
 ) -> Optional[NewsResponse]:
     news_items_obj = TypeAdapter(List[NewsItem]).dump_python(
         news_items,
@@ -471,7 +462,6 @@ async def structurize_scraped_news(
     news_items_json = json.dumps(news_items_obj, ensure_ascii=False, default=str)
     classifications = get_source_classifications()
     news_prompt = structurize_news_prompt.format(
-        excluded_titles=excluded_titles,
         formatted_scraped_results=news_items_json,
         max_news_items_count=max_news_items_count,
         **classifications,
@@ -538,37 +528,6 @@ async def structurize_scraped_news(
     logger.info(f"Generated news response: {response.text[:100]}")
     news_response: NewsResponse = response.parsed
     return news_response
-
-
-async def get_todays_news_titles() -> List[str]:
-    today = datetime.now(timezone.utc).date()
-    start_of_day = datetime(
-        today.year, today.month, today.day, tzinfo=timezone.utc
-    ) - timedelta(hours=48)
-    end_of_day = start_of_day + timedelta(days=1)
-
-    # Create translation projection for title field only
-    translation_projections = create_translation_projection(["title"], "ka")
-
-    pipeline = [
-        {
-            "$match": {
-                "news_date": {"$gte": start_of_day, "$lt": end_of_day},
-                "is_generated_news": True,
-            }
-        },
-        {
-            "$project": {
-                # Only project the title field with translation fallback
-                **translation_projections
-            }
-        },
-    ]
-
-    news_items = await mongo.verifications.aggregate(pipeline)
-    return [
-        news_item.get("title") for news_item in news_items if news_item.get("title")
-    ]
 
 
 async def save_news(
@@ -648,9 +607,13 @@ async def save_news(
     if len(operations) == 0:
         logger.info("No news items to insert")
         return []
+    # Generate embeddings for all titles
+    titles = [news_item.title for news_item in response.news]
+    title_embeddings = await embedding_service.generate_embeddings(titles)
+
     # Convert Pydantic models to plain dicts for MongoDB
     documents = []
-    for operation in operations:
+    for idx, operation in enumerate(operations):
         doc = operation.model_dump(by_alias=True, exclude_none=True)
         # Ensure ObjectId types are preserved for MongoDB where needed
         if "feed_id" in doc and isinstance(doc["feed_id"], str):
@@ -658,6 +621,9 @@ async def save_news(
                 doc["feed_id"] = ObjectId(doc["feed_id"])  # type: ignore
             except Exception:
                 pass
+
+        # Add title embedding
+        doc["title_embedding"] = title_embeddings[idx]
 
         documents.append(doc)
 

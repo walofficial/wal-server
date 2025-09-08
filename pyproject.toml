@@ -132,6 +132,7 @@ dependencies = [
     "pydantic-xml>=2.17.3",
     "structlog>=25.4.0",
     "gcloud-aio-storage>=9.6.0",
+    "scikit-learn>=1.7.1",
 ]
 
 [dependency-groups]

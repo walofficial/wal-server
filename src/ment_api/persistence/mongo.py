@@ -256,3 +256,37 @@ async def initialize_db() -> None:
     except Exception as e:
         logger.warning(f"Failed to ensure Atlas Search index on 'verifications': {e}")
 
+    # Create vector search index for title embeddings
+    try:
+        # Check if vector index exists
+        search_indexes_cursor = await mongo_client.db[
+            "verifications"
+        ].list_search_indexes()
+        existing_search_indexes = await search_indexes_cursor.to_list(length=None)
+        existing_index_names = [idx.get("name") for idx in existing_search_indexes]
+
+        if "title_embedding_index" not in existing_index_names:
+            await mongo_client.db["verifications"].create_search_index(
+                {
+                    "name": "title_embedding_index",
+                    "type": "vectorSearch",
+                    "definition": {
+                        "fields": [
+                            {
+                                "type": "vector",
+                                "path": "title_embedding",
+                                "numDimensions": 3072,
+                                "similarity": "cosine",
+                            }
+                        ]
+                    },
+                }
+            )
+            logger.info(
+                "Created vector search index 'title_embedding_index' on 'verifications' collection"
+            )
+        else:
+            logger.info("Vector search index 'title_embedding_index' already exists")
+
+    except Exception as e:
+        logger.warning(f"Failed to ensure vector search index: {e}")
