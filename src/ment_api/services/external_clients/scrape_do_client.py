@@ -249,7 +249,12 @@ class ScrapeDoClient:
         ]
 
         if waitForImages:
-            query_params.append(("waitSelector", "#loaded-images"))
+            play_with_browser_script.append({ "Action": "Wait", "Timeout": 3000 })
+            play_with_browser_script.append({
+    "action": "Execute",
+    "execute": "(async()=>{await Promise.all(Array.from(document.images).map((e=>e.complete?Promise.resolve():new Promise((o=>{e.onload=e.onerror=o}))))))})();"
+  })
+            play_with_browser_script.append({ "Action": "Wait", "Timeout": 1000 })
             
             pass
             # play_with_browser_script.append({ "Action": "WaitForRequestCompletion", "UrlPattern": "*cdn.wal.ge/video-verifications/*", "Timeout": 30000 })
@@ -261,7 +266,7 @@ class ScrapeDoClient:
         query_params.append(("playWithBrowser", json.dumps(play_with_browser_script)))
 
         # Only add customHeaders for non-Facebook URLs
-        if "facebook.com" not in scrape_url:
+        if "facebook.com" not in scrape_url and not waitForImages:
             query_params.append(("customHeaders", "false"))
 
    

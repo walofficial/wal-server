@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Optional
@@ -72,6 +73,19 @@ async def web(request: Request,  authorization: str = Header(None)):
     try:
         event_data_string = rawBody.decode()
         event_data_json = webhook_receiver.receive(event_data_string, authorization)
+        logging.info(
+            "Received LiveKit webhook event",
+            extra={
+                "json_fields": {
+                    "operation": "livekit_webhook",
+                    "event_type": event_data_json.event,
+                    "raw_body_length": len(rawBody)
+                },
+                "labels": {
+                    "component": "livekit_webhook"
+                }
+            }
+        )
         # Stringify the event data for logging/debugging
         # Verify and process the webhook event
         event = event_data_json.event
