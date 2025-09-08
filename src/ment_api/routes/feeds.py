@@ -357,7 +357,7 @@ async def get_location_feeds(
     ignore_location_check: Annotated[bool, Query()] = False,
 ):
     user_location = (x_user_location_latitude, x_user_location_longitude)
-    # TODO: remove category id from the FE and also the from BE. it should just be country id based on the user selected region or ip. 
+    # TODO: remove category id from the FE and also the from BE. it should just be country id based on the user selected region or ip.
     feeds = await mongo.feeds.aggregate(get_location_feeds_pipeline(category_id))
     feeds = list(feeds)
 
@@ -599,10 +599,11 @@ async def publish_post(
                     )
 
                     # Read file contents and prepare upload coroutines
+                    file_sizes = []
                     for idx, file in enumerate(files):
                         file_content = await file.read()
                         file_size = len(file_content)
-                        upload_span.input["file_sizes"].append(file_size)
+                        file_sizes.append(file_size)
                         upload_coroutines.append(
                             upload_image(
                                 file_content, f"{file.filename}", file.content_type
@@ -613,16 +614,20 @@ async def publish_post(
                     try:
                         images_with_dims = await asyncio.gather(*upload_coroutines)
 
-                        # Update upload span with results
+                        # Update upload span with input and results
                         upload_span.update(
+                            input={
+                                "file_count": len(files),
+                                "file_names": [file.filename for file in files],
+                                "file_sizes": file_sizes,
+                                "content_types": [file.content_type for file in files],
+                            },
                             output={
                                 "uploaded_count": len(images_with_dims),
                                 "upload_urls": [img.url for img in images_with_dims],
-                                "total_size_bytes": sum(
-                                    upload_span.input["file_sizes"]
-                                ),
+                                "total_size_bytes": sum(file_sizes),
                                 "success": True,
-                            }
+                            },
                         )
 
                         logger.info(
@@ -630,9 +635,7 @@ async def publish_post(
                             extra={
                                 "json_fields": {
                                     "uploaded_count": len(images_with_dims),
-                                    "total_size_bytes": sum(
-                                        upload_span.input["file_sizes"]
-                                    ),
+                                    "total_size_bytes": sum(file_sizes),
                                     "operation": "file_upload_batch",
                                 },
                                 "labels": {
@@ -783,52 +786,51 @@ async def publish_post(
                     SocialMediaScrapeStatus.PENDING
                 )
 
-                try:
-                    result = await mongo.verifications.insert_one(verification_doc)
-                    verification_id = result.inserted_id
-                    verification_doc["_id"] = verification_id
+            try:
+                result = await mongo.verifications.insert_one(verification_doc)
+                logger.info(f"Verification document inserted successfully: {result.inserted_id} and with potential verification id: {potential_verification_id}")
 
-                    logger.info(
-                        "Verification document inserted successfully",
-                        extra={
-                            "json_fields": {
-                                "verification_id": str(verification_id),
-                                "feed_id": str(feed_id),
-                                "operation": "verification_doc_insert",
-                            },
-                            "labels": {
-                                "component": "publish_post",
-                                "stage": "database_insert",
-                            },
+                logger.info(
+                    "Verification document inserted successfully",
+                    extra={
+                        "json_fields": {
+                            "verification_id": str(potential_verification_id),
+                            "feed_id": str(feed_id),
+                            "operation": "verification_doc_insert",
                         },
-                    )
-
-                except Exception as db_error:
-                    logger.error(
-                        "Failed to insert verification document",
-                        extra={
-                            "json_fields": {
-                                "error_message": str(db_error),
-                                "feed_id": str(feed_id),
-                                "operation": "verification_doc_insert_error",
-                            },
-                            "labels": {
-                                "component": "publish_post",
-                                "stage": "database_insert",
-                                "severity": "high",
-                            },
+                        "labels": {
+                            "component": "publish_post",
+                            "stage": "database_insert",
                         },
-                    )
-                    raise
-
-                # Complete the document creation span
-                doc_span.update(
-                    output={
-                        "verification_id": str(verification_id),
-                        "document_created": True,
-                        "success": True,
-                    }
+                    },
                 )
+
+            except Exception as db_error:
+                logger.error(
+                    "Failed to insert verification document",
+                    extra={
+                        "json_fields": {
+                            "error_message": str(db_error),
+                            "feed_id": str(feed_id),
+                            "operation": "verification_doc_insert_error",
+                        },
+                        "labels": {
+                            "component": "publish_post",
+                            "stage": "database_insert",
+                            "severity": "high",
+                        },
+                    },
+                )
+                raise
+
+            # Complete the document creation span
+            doc_span.update(
+                output={
+                    "verification_id": str(potential_verification_id),
+                    "document_created": True,
+                    "success": True,
+                }
+            )
 
             # 7. Schedule background tasks that need verification_id with Langfuse tracking
             with endpoint_span.start_as_current_span(
@@ -839,7 +841,7 @@ async def publish_post(
                 if youtube_url:  # This means extracted_media was YouTube
                     background_tasks.add_task(
                         _fetch_youtube_metadata_and_process_in_background,
-                        verification_id,
+                        potential_verification_id,
                         youtube_url,
                         external_user_id,
                     )
@@ -861,7 +863,7 @@ async def publish_post(
                     # This is the correct place to add the task.
                     background_tasks.add_task(
                         _fetch_and_update_og_preview,
-                        verification_id,  # Now we have it
+                        potential_verification_id,  # Now we have it
                         extracted_media["url"],
                         extracted_media["platform"],
                     )
@@ -878,7 +880,7 @@ async def publish_post(
                         "Scheduling background task for social media scrape",
                         extra={
                             "json_fields": {
-                                "verification_id": str(verification_id),
+                                "verification_id": str(potential_verification_id),
                                 "platform": active_social_media_info_for_scrape[
                                     "platform"
                                 ],
@@ -892,13 +894,13 @@ async def publish_post(
                     )
                     # Assuming publish_social_media_scrape_request is non-blocking or handled by background_tasks correctly
                     background_tasks.add_task(
-                        publish_social_media_scrape_request, verification_id
+                        publish_social_media_scrape_request, potential_verification_id
                     )
                     scheduled_tasks.append("social_media_scrape")
 
                 tasks_span.update(
                     input={
-                        "verification_id": str(verification_id),
+                        "verification_id": str(potential_verification_id),
                         "youtube_url": youtube_url,
                         "has_external_media": bool(extracted_media),
                         "has_social_media_scrape": bool(
@@ -927,7 +929,7 @@ async def publish_post(
                         "Scheduling general fact check",
                         extra={
                             "json_fields": {
-                                "verification_id": str(verification_id),
+                                "verification_id": str(potential_verification_id),
                                 "reason": "pending_factcheck_state",
                                 "operation": "fact_check_schedule",
                             },
@@ -938,7 +940,9 @@ async def publish_post(
                         },
                     )
 
-                    background_tasks.add_task(publish_check_fact, [verification_id])
+                    background_tasks.add_task(
+                        publish_check_fact, [potential_verification_id]
+                    )
                     scheduled_tasks.append("fact_check")
                 elif not extracted_media and not active_social_media_info_for_scrape:
                     # Fallback for simple posts that only have `should_factcheck`
@@ -946,7 +950,7 @@ async def publish_post(
                         "Scheduling general fact check (fallback)",
                         extra={
                             "json_fields": {
-                                "verification_id": str(verification_id),
+                                "verification_id": str(potential_verification_id),
                                 "reason": "fallback_simple_post",
                                 "operation": "fact_check_schedule",
                             },
@@ -957,7 +961,9 @@ async def publish_post(
                         },
                     )
 
-                    background_tasks.add_task(publish_check_fact, [verification_id])
+                    background_tasks.add_task(
+                        publish_check_fact, [potential_verification_id]
+                    )
                     scheduled_tasks.append("fact_check")
 
                 # Update final task scheduling summary
@@ -973,7 +979,7 @@ async def publish_post(
                     "Background tasks scheduled successfully",
                     extra={
                         "json_fields": {
-                            "verification_id": str(verification_id),
+                            "verification_id": str(potential_verification_id),
                             "scheduled_tasks": scheduled_tasks,
                             "task_count": len(scheduled_tasks),
                             "operation": "background_tasks_completed",
@@ -987,7 +993,7 @@ async def publish_post(
 
             endpoint_span.update(
                 output={
-                    "verification_id": str(verification_id),
+                    "verification_id": str(potential_verification_id),
                     "has_background_tasks": True,
                     "processing_type": (
                         "youtube"

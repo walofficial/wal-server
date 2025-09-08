@@ -38,7 +38,7 @@ async def upload_video_verification(
                 content_type=content_type,
             )
 
-            public_url = f"https://storage.cloud.google.com/{settings.storage_bucket_name}/{object_name}"
+            public_url = f"https://storage.googleapis.com/{settings.storage_bucket_name}/{object_name}"
 
             logging.info(
                 "Video verification upload completed",
@@ -115,7 +115,7 @@ async def upload_image_verification(
                 content_type=content_type,
             )
 
-            public_url = f"https://storage.cloud.google.com/{settings.storage_bucket_name}/{object_name}"
+            public_url = f"https://storage.googleapis.com/{settings.storage_bucket_name}/{object_name}"
 
             result = ImageWithDims(
                 url=public_url,
@@ -152,7 +152,7 @@ async def upload_image_verification(
                     content_type=content_type,
                 )
 
-                public_url = f"https://storage.cloud.google.com/{settings.storage_bucket_name}/{object_name}"
+                public_url = f"https://storage.googleapis.com/{settings.storage_bucket_name}/{object_name}"
 
                 result = ImageWithDims(
                     url=public_url,
@@ -263,11 +263,11 @@ def build_transcoded_video_path(file_name: str) -> str:
 
 
 def build_public_transcoded_video_path(file_name: str) -> str:
-    return f"https://storage.cloud.google.com/{settings.storage_bucket_name}/{settings.storage_video_verification_transcoded_path}{file_name}/"
+    return f"https://storage.googleapis.com/{settings.storage_bucket_name}/{settings.storage_video_verification_transcoded_path}{file_name}/"
 
 
 def build_public_video_mp4_path(file_name: str) -> str:
-    return f"https://storage.cloud.google.com/{settings.storage_bucket_name}/{settings.storage_video_verification_path}{file_name}"
+    return f"https://storage.googleapis.com/{settings.storage_bucket_name}/{settings.storage_video_verification_path}{file_name}"
 
 
 async def check_blob_exists(blob_path: str, bucket_name: str = None) -> bool:

@@ -93,6 +93,132 @@ class GeminiClient:
                         return None
 
                     image_data = await response.read()
+
+                    # Validate content type
+                    content_type = response.headers.get("content-type", "").lower()
+                    if not content_type.startswith("image/"):
+                        error_msg = f"Invalid content type: {content_type}. Expected image/* but got non-image content."
+                        logger.error(
+                            "Image download failed - invalid content type",
+                            extra={
+                                "json_fields": {
+                                    "url": url,
+                                    "content_type": content_type,
+                                    "error": error_msg,
+                                    "data_size_bytes": len(image_data),
+                                    "operation": "gemini_image_download_invalid_content_type",
+                                },
+                                "labels": {
+                                    "component": "gemini_client",
+                                    "severity": "medium",
+                                },
+                            },
+                        )
+                        self.langfuse.update_current_trace(
+                            output=None,
+                            metadata={
+                                "error": error_msg,
+                                "content_type": content_type,
+                                "failure_reason": "invalid_content_type",
+                                "data_size_bytes": len(image_data),
+                            },
+                        )
+                        return None
+
+                    # Validate minimum data size
+                    if len(image_data) < 100:  # Minimum bytes for a valid image
+                        error_msg = f"Image data too small: {len(image_data)} bytes. Likely corrupted or not an image."
+                        logger.error(
+                            "Image download failed - insufficient data",
+                            extra={
+                                "json_fields": {
+                                    "url": url,
+                                    "data_size_bytes": len(image_data),
+                                    "error": error_msg,
+                                    "operation": "gemini_image_download_insufficient_data",
+                                },
+                                "labels": {
+                                    "component": "gemini_client",
+                                    "severity": "medium",
+                                },
+                            },
+                        )
+                        self.langfuse.update_current_trace(
+                            output=None,
+                            metadata={
+                                "error": error_msg,
+                                "failure_reason": "insufficient_data",
+                                "data_size_bytes": len(image_data),
+                            },
+                        )
+                        return None
+
+                    # Validate image magic numbers/signatures
+                    image_signatures = {
+                        b"\xff\xd8\xff": "JPEG",
+                        b"\x89PNG\r\n\x1a\n": "PNG",
+                        b"GIF87a": "GIF",
+                        b"GIF89a": "GIF",
+                        b"RIFF": "WEBP",  # Note: WEBP has additional validation below
+                        b"BM": "BMP",
+                    }
+
+                    is_valid_image = False
+                    detected_format = None
+
+                    for signature, format_name in image_signatures.items():
+                        if image_data.startswith(signature):
+                            # Special case for WEBP - need to check for WEBP signature after RIFF
+                            if format_name == "WEBP":
+                                if (
+                                    len(image_data) >= 12
+                                    and image_data[8:12] == b"WEBP"
+                                ):
+                                    is_valid_image = True
+                                    detected_format = format_name
+                                    break
+                            else:
+                                is_valid_image = True
+                                detected_format = format_name
+                                break
+
+                    if not is_valid_image:
+                        # Log first 20 bytes for debugging
+                        data_preview = (
+                            image_data[:20].hex()
+                            if len(image_data) >= 20
+                            else image_data.hex()
+                        )
+                        error_msg = f"Invalid image format. Data does not match known image signatures. Data preview: {data_preview}"
+                        logger.error(
+                            "Image download failed - invalid image format",
+                            extra={
+                                "json_fields": {
+                                    "url": url,
+                                    "data_size_bytes": len(image_data),
+                                    "data_preview_hex": data_preview,
+                                    "content_type": content_type,
+                                    "error": error_msg,
+                                    "operation": "gemini_image_download_invalid_format",
+                                },
+                                "labels": {
+                                    "component": "gemini_client",
+                                    "severity": "medium",
+                                },
+                            },
+                        )
+                        self.langfuse.update_current_trace(
+                            output=None,
+                            metadata={
+                                "error": error_msg,
+                                "failure_reason": "invalid_image_format",
+                                "data_size_bytes": len(image_data),
+                                "detected_format": None,
+                                "content_type": content_type,
+                            },
+                        )
+                        return None
+
                     try:
                         image = PIL.Image.open(BytesIO(image_data))
                         self.langfuse.update_current_trace(
@@ -107,6 +233,8 @@ class GeminiClient:
                                 "width": image.size[0],
                                 "height": image.size[1],
                                 "data_size_kb": round(len(image_data) / 1024, 2),
+                                "detected_format": detected_format,
+                                "content_type": content_type,
                             },
                         )
                         logger.debug(
@@ -116,6 +244,8 @@ class GeminiClient:
                                     "url": url,
                                     "image_size": image.size,
                                     "format": image.format,
+                                    "detected_format": detected_format,
+                                    "content_type": content_type,
                                     "data_size_kb": round(len(image_data) / 1024, 2),
                                     "operation": "gemini_image_download_success",
                                 },
@@ -124,29 +254,41 @@ class GeminiClient:
                         )
                         return image
                     except Exception as e:
-                        error_msg = f"Failed to open image data: {e}"
+                        # This should be rare now that we validate format beforehand
+                        data_preview = (
+                            image_data[:20].hex()
+                            if len(image_data) >= 20
+                            else image_data.hex()
+                        )
+                        error_msg = f"PIL failed to open validated image data: {e}"
                         logger.error(
-                            "Image download failed - image processing error",
+                            "Image download failed - PIL processing error after validation",
                             extra={
                                 "json_fields": {
                                     "url": url,
                                     "error": str(e),
                                     "error_type": type(e).__name__,
                                     "data_size_bytes": len(image_data),
-                                    "operation": "gemini_image_download_processing_error",
+                                    "detected_format": detected_format,
+                                    "content_type": content_type,
+                                    "data_preview_hex": data_preview,
+                                    "operation": "gemini_image_download_pil_error",
                                 },
                                 "labels": {
                                     "component": "gemini_client",
-                                    "severity": "medium",
+                                    "severity": "high",  # This is more concerning since we validated the format
                                 },
                             },
+                            exc_info=True,
                         )
                         self.langfuse.update_current_trace(
                             output=None,
                             metadata={
                                 "error": error_msg,
-                                "failure_reason": "image_processing_error",
+                                "failure_reason": "pil_processing_error",
                                 "data_size_bytes": len(image_data),
+                                "detected_format": detected_format,
+                                "content_type": content_type,
                             },
                         )
                         return None
