@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Optional
 
 import aiohttp
-from fastapi import APIRouter, Body, Header, Query, Request, HTTPException
+from fastapi import APIRouter, Body, Header, Query, Request, HTTPException, Depends
 from livekit.api.access_token import AccessToken, VideoGrants
 from livekit.api.ingress_service import IngressService
 from livekit.api.room_service import RoomService
@@ -49,19 +49,18 @@ class StartLiveResponse(BaseModel):
     room_name: str
 
 
-room_service = RoomService(
-    session=aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)),
-    url=settings.livekit_url,
-    api_key=LIVEKIT_API_KEY,
-    api_secret=LIVEKIT_API_SECRET,
-)
+async def get_room_service(request: Request) -> RoomService:
+    svc = getattr(request.app.state, "livekit_room_service", None)
+    if svc is None:
+        raise HTTPException(status_code=500, detail="LiveKit RoomService not initialized")
+    return svc
 
-ingress_service = IngressService(
-    session=aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)),
-    url=settings.livekit_url,
-    api_key=LIVEKIT_API_KEY,
-    api_secret=LIVEKIT_API_SECRET,
-)
+
+async def get_ingress_service(request: Request) -> IngressService:
+    svc = getattr(request.app.state, "livekit_ingress_service", None)
+    if svc is None:
+        raise HTTPException(status_code=500, detail="LiveKit IngressService not initialized")
+    return svc
 
 
 @router.post("/webhook", operation_id="live_webhook", response_model=bool)
@@ -219,6 +218,7 @@ async def request_livekit_ingress(
     request: Request,
     feed_id: Annotated[CustomObjectId, Body()],
     text_content: Annotated[Optional[str], Body()] = None,
+    ingress_service: IngressService = Depends(get_ingress_service),
 ):
     user_id = request.state.supabase_user_id
     room_name = str("ment-live-") + str(uuid.uuid4())
@@ -258,6 +258,7 @@ async def request_livekit_ingress(
                                 filename_prefix=f"livekit-recording/{roomId}/{roomId}",
                                 segment_duration=3,
                                 gcp=GCPUpload(
+                                    credentials="",
                                     bucket="ment-verification",
                                 ),
                             ),
@@ -297,6 +298,7 @@ async def start_live(
     request: Request,
     feed_id: Annotated[CustomObjectId, Body()],
     text_content: Annotated[Optional[str], Body()] = None,
+    room_service: RoomService = Depends(get_room_service),
 ):
     user_id = request.state.supabase_user_id
     room_name = str("ment-live-") + str(uuid.uuid4())
@@ -325,13 +327,14 @@ async def start_live(
                 max_participants=10,
                 egress=RoomEgress(
                     participant=AutoParticipantEgress(
-                        preset=EncodingOptionsPreset.PORTRAIT_H264_720P_30,
+                        preset=EncodingOptionsPreset.PORTRAIT_H264_1080P_60,
                         segment_outputs=[
                             SegmentedFileOutput(
                                 # Filename prefix is the each of the segment file prefix, that's why we make sure they are in a sub folder
                                 filename_prefix=f"livekit-recording/{roomId}/{roomId}",
                                 segment_duration=3,
                                 gcp=GCPUpload(
+                                    credentials="",
                                     bucket="ment-verification",
                                 ),
                             ),
@@ -358,6 +361,7 @@ async def start_live(
 @router.post("/stop-live", operation_id="stop_live")
 async def stop_live(
     room_name: Annotated[str, Query(embed=True)],
+    room_service: RoomService = Depends(get_room_service),
 ):
     await mongo.verifications.update_one(
         {"livekit_room_name": room_name},

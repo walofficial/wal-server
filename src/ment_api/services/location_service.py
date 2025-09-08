@@ -1,13 +1,8 @@
 import logging
-import math
-from typing import Awaitable, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
 from ment_api.common.custom_object_id import CustomObjectId
-from ment_api.models.feed_location_mapping import (
-    Lat,
-    Lng,
-    FeedLocationMapping,
-    Location,
-)
+from ment_api.models.feed_location_mapping import Lat, Lng, Location
 from ment_api.persistence import mongo
 
 logger = logging.getLogger(__name__)
@@ -15,42 +10,143 @@ logger = logging.getLogger(__name__)
 
 async def is_on_feed_location(
     feed_id: CustomObjectId, current_location: Tuple[Lat, Lng]
-) -> Awaitable[Tuple[bool, Optional[Location]]]:
-    mapping = await mongo.feed_location_mappings.find_one({"feed_ids": feed_id})
+) -> Tuple[bool, Optional[Location]]:
+    """Fast geospatial check using 2dsphere index.
 
-    if mapping is None:
+    Returns (is_inside_radius, nearest_location)
+    """
+    try:
+        near_point = {
+            "type": "Point",
+            "coordinates": [current_location[1], current_location[0]],
+        }
+
+        pipeline = [
+            {
+                "$geoNear": {
+                    "near": near_point,
+                    "distanceField": "distance",
+                    "spherical": True,
+                    "key": "location",
+                    "query": {"feed_id": feed_id},
+                    "limit": 1,
+                }
+            },
+            {
+                "$project": {
+                    "name": 1,
+                    "address": 1,
+                    "radius": 1,
+                    "distance": 1,
+                    "lat": {"$arrayElemAt": ["$location.coordinates", 1]},
+                    "lng": {"$arrayElemAt": ["$location.coordinates", 0]},
+                }
+            },
+        ]
+
+        results = await mongo.feed_locations.aggregate(pipeline)
+        if not results:
+            return False, None
+
+        doc = results[0]
+        inside = bool(doc.get("distance", float("inf")) <= doc.get("radius", 300))
+        nearest_location = Location(
+            name=doc.get("name", ""),
+            address=doc.get("address", ""),
+            location=(doc.get("lat", 0.0), doc.get("lng", 0.0)),
+        )
+
+        return inside, nearest_location
+
+    except Exception as e:
+        logger.error(
+            "Location check failed",
+            extra={
+                "json_fields": {
+                    "feed_id": str(feed_id),
+                    "operation": "is_on_feed_location",
+                    "error_message": str(e),
+                },
+                "labels": {"component": "location_service", "severity": "high"},
+            },
+            exc_info=True,
+        )
         return False, None
 
-    location_mapping = FeedLocationMapping(**mapping)
-    closest_point = None
-    min_distance = float("inf")
-    radius = location_mapping.radius if hasattr(location_mapping, "radius") else 300
 
-    for location_metadata in location_mapping.locations:
-        distance = haversine_distance(current_location, location_metadata.location)
-        if distance <= radius:
-            return True, location_metadata
-        if distance < min_distance:
-            min_distance = distance
-            closest_point = location_metadata
+async def get_nearest_locations_for_feeds(
+    feed_ids: List[CustomObjectId], current_location: Tuple[Lat, Lng]
+) -> Dict[CustomObjectId, Tuple[bool, Optional[Location]]]:
+    """Batch nearest lookup per feed using a single $geoNear + $group.
 
-    return False, closest_point
+    Returns mapping of feed_id -> (is_inside_radius, nearest_location)
+    """
+    if not feed_ids:
+        return {}
 
+    near_point = {
+        "type": "Point",
+        "coordinates": [current_location[1], current_location[0]],
+    }
 
-def haversine_distance(point_one: Tuple[Lat, Lng], point_two: Tuple[Lat, Lng]) -> float:
-    R = 6371000  # Radius of the Earth in meters
-    lat1, lon1 = point_one
-    lat2, lon2 = point_two
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    delta_phi = math.radians(lat2 - lat1)
-    delta_lambda = math.radians(lon2 - lon1)
+    pipeline = [
+        {
+            "$geoNear": {
+                "near": near_point,
+                "distanceField": "distance",
+                "spherical": True,
+                "key": "location",
+                "query": {"feed_id": {"$in": feed_ids}},
+            }
+        },
+        {"$sort": {"distance": 1}},
+        {
+            "$group": {
+                "_id": "$feed_id",
+                "nearest": {
+                    "$first": {
+                        "name": "$name",
+                        "address": "$address",
+                        "radius": "$radius",
+                        "distance": "$distance",
+                        "lat": {"$arrayElemAt": ["$location.coordinates", 1]},
+                        "lng": {"$arrayElemAt": ["$location.coordinates", 0]},
+                    }
+                },
+                "inside": {
+                    "$max": {
+                        "$cond": [
+                            {"$lte": ["$distance", "$radius"]},
+                            1,
+                            0,
+                        ]
+                    }
+                },
+            }
+        },
+        {
+            "$project": {
+                "feed_id": "$_id",
+                "inside": 1,
+                "nearest": 1,
+                "_id": 0,
+            }
+        },
+    ]
 
-    a = (
-        math.sin(delta_phi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
-    )
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    results = await mongo.feed_locations.aggregate(pipeline)
+    mapping: Dict[CustomObjectId, Tuple[bool, Optional[Location]]] = {}
 
-    distance = R * c  # Distance in meters
-    return distance
+    for doc in results:
+        feed_id = doc["feed_id"]
+        nearest = doc.get("nearest") or {}
+        location_obj = None
+        if nearest:
+            location_obj = Location(
+                name=nearest.get("name", ""),
+                address=nearest.get("address", ""),
+                location=(nearest.get("lat", 0.0), nearest.get("lng", 0.0)),
+            )
+        mapping[feed_id] = (bool(doc.get("inside", 0)), location_obj)
+
+    return mapping

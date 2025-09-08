@@ -54,7 +54,10 @@ from ment_api.services.external_clients.scrape_do_client import (
     ScrapeDoClient,
     get_scrape_do_dependency,
 )
-from ment_api.services.location_service import is_on_feed_location
+from ment_api.services.location_service import (
+    get_nearest_locations_for_feeds,
+    is_on_feed_location,
+)
 from ment_api.services.news_service import publish_check_fact
 from ment_api.services.notification_service import (
     send_global_notifications,
@@ -314,7 +317,7 @@ async def _fetch_youtube_metadata_and_process_in_background(
 
 
 # Add this helper function near the top of the file
-async def get_location_feeds_pipeline(category_id: CustomObjectId):
+def get_location_feeds_pipeline(category_id: CustomObjectId):
     """Common pipeline for getting tasks with live user and verification counts"""
     return [
         {"$match": {"feed_category_id": category_id, "hidden": settings.env == "dev"}},
@@ -354,27 +357,34 @@ async def get_location_feeds(
     ignore_location_check: Annotated[bool, Query()] = False,
 ):
     user_location = (x_user_location_latitude, x_user_location_longitude)
-    pipeline = await get_location_feeds_pipeline(category_id)
-
-    feeds = await mongo.feeds.aggregate(pipeline)
+    # TODO: remove category id from the FE and also the from BE. it should just be country id based on the user selected region or ip. 
+    feeds = await mongo.feeds.aggregate(get_location_feeds_pipeline(category_id))
     feeds = list(feeds)
 
     feeds_at_location = []
     nearest_feeds = []
 
-    for feed in feeds:
-        feed_obj = Feed(**feed)
-        is_at_location, nearest_location = await is_on_feed_location(
-            feed_obj.id, user_location
-        )
-        if settings.env == "dev":
-            is_at_location = True
-        if is_at_location:
-            feeds_at_location.append(feed_obj)
-        else:
-            nearest_feeds.append(
-                FeedWithLocation(feed=feed_obj, nearest_location=nearest_location)
-            )
+    feed_ids = [Feed(**feed).id for feed in feeds]
+
+    if settings.env == "dev" or ignore_location_check:
+        # Preserve existing behavior: in prod, return all as at location
+        feeds_at_location = [Feed(**feed) for feed in feeds]
+    else:
+        mapping = await get_nearest_locations_for_feeds(feed_ids, user_location)
+        for feed in feeds:
+            feed_obj = Feed(**feed)
+            result = mapping.get(feed_obj.id)
+            if result:
+                is_at_location, nearest_location = result
+            else:
+                is_at_location, nearest_location = False, None
+
+            if is_at_location:
+                feeds_at_location.append(feed_obj)
+            else:
+                nearest_feeds.append(
+                    FeedWithLocation(feed=feed_obj, nearest_location=nearest_location)
+                )
 
     return FeedsResponse(
         feeds_at_location=feeds_at_location, nearest_feeds=nearest_feeds
@@ -1069,7 +1079,14 @@ async def get_screenshot(
         cached_data = await redis.get(cache_key)
         if cached_data:
             logger.info(
-                f"Returning cached screenshot for verification {verification_id}"
+                "Returning cached screenshot",
+                extra={
+                    "json_fields": {
+                        "verification_id": str(verification_id),
+                        "operation": "get_screenshot_cached",
+                    },
+                    "labels": {"component": "feeds"},
+                },
             )
             return Response(
                 content=cached_data,
@@ -1111,6 +1128,7 @@ async def get_screenshot(
             width=1920,
             height=1080,
             particularScreenShot="#static-view",
+            geoCode="is",
         )
 
         screenshot_data = result.get("screenshot_data")
@@ -1123,7 +1141,14 @@ async def get_screenshot(
         )  # 24 hours = 86400 seconds
 
         logger.info(
-            f"Screenshot generated successfully for verification {verification_id}"
+            "Screenshot generated successfully",
+            extra={
+                "json_fields": {
+                    "verification_id": str(verification_id),
+                    "operation": "get_screenshot_generated",
+                },
+                "labels": {"component": "feeds"},
+            },
         )
 
         # Return the screenshot bytes as a Response with proper headers
@@ -1140,7 +1165,15 @@ async def get_screenshot(
         raise
     except Exception as e:
         logger.error(
-            f"Error generating screenshot for verification {verification_id}: {str(e)}",
+            "Error generating screenshot",
+            extra={
+                "json_fields": {
+                    "verification_id": str(verification_id),
+                    "error_message": str(e),
+                    "operation": "get_screenshot_error",
+                },
+                "labels": {"component": "feeds", "severity": "high"},
+            },
             exc_info=True,
         )
         raise HTTPException(
@@ -1237,7 +1270,14 @@ async def generate_social_media_content(
         verification_id = selected_item["_id"]
 
         logger.info(
-            f"Selected content item {verification_id} for social media generation"
+            "Selected content item for social media generation",
+            extra={
+                "json_fields": {
+                    "verification_id": str(verification_id),
+                    "operation": "social_media_content_select_item",
+                },
+                "labels": {"component": "feeds"},
+            },
         )
 
         # Prepare content for AI generation
@@ -1269,7 +1309,15 @@ async def generate_social_media_content(
                 title = notification_response.title
                 description = notification_response.description
                 logger.info(
-                    f"Generated AI content - Title: {title}, Description: {description}"
+                    "Generated AI content",
+                    extra={
+                        "json_fields": {
+                            "title": title,
+                            "description": description,
+                            "operation": "social_media_content_ai_generated",
+                        },
+                        "labels": {"component": "feeds"},
+                    },
                 )
             else:
                 # Fallback to default if AI determines content is not relevant
@@ -1278,7 +1326,16 @@ async def generate_social_media_content(
                     if notification_response
                     else "AI generation failed"
                 )
-                logger.info(f"AI determined content not relevant: {reason}")
+                logger.info(
+                    "AI determined content not relevant",
+                    extra={
+                        "json_fields": {
+                            "reason": reason,
+                            "operation": "social_media_content_ai_not_relevant",
+                        },
+                        "labels": {"component": "feeds"},
+                    },
+                )
 
                 if selected_item.get("is_generated_news", False):
                     title = "📰 მნიშვნელოვანი სიახლე"
@@ -1289,7 +1346,16 @@ async def generate_social_media_content(
 
         except Exception as e:
             # Fallback to default content if AI generation fails
-            logger.error(f"Failed to generate AI content, using fallback: {str(e)}")
+            logger.error(
+                "Failed to generate AI content, using fallback",
+                extra={
+                    "json_fields": {
+                        "error_message": str(e),
+                        "operation": "social_media_content_ai_error",
+                    },
+                    "labels": {"component": "feeds", "severity": "high"},
+                },
+            )
 
             if selected_item.get("is_generated_news", False):
                 title = "📰 მნიშვნელოვანი სიახლე"
@@ -1304,13 +1370,31 @@ async def generate_social_media_content(
             social_media_card_title = ""
             if notification_response and notification_response.social_media_card_title:
                 social_media_card_title = notification_response.social_media_card_title
-                logger.info(f"Using social media card title: {social_media_card_title}")
+                logger.info(
+                    "Using social media card title",
+                    extra={
+                        "json_fields": {
+                            "title": social_media_card_title,
+                            "operation": "social_media_card_title",
+                        },
+                        "labels": {"component": "feeds"},
+                    },
+                )
 
             # Get fact check summary from response
             fact_check_summary = ""
             if notification_response and notification_response.fact_check_summary:
                 fact_check_summary = notification_response.fact_check_summary
-                logger.info(f"Generated fact check summary: {fact_check_summary}")
+                logger.info(
+                    "Generated fact check summary",
+                    extra={
+                        "json_fields": {
+                            "summary": fact_check_summary,
+                            "operation": "fact_check_summary",
+                        },
+                        "labels": {"component": "feeds"},
+                    },
+                )
 
             # Construct URL for screenshot with title parameter
             screenshot_url = (
@@ -1324,7 +1408,16 @@ async def generate_social_media_content(
             if fact_check_summary:
                 encoded_fact_check_summary = urllib.parse.quote(fact_check_summary)
                 screenshot_url += f"&fact_check_summary={encoded_fact_check_summary}"
-            logger.info(f"Capturing screenshot for URL: {screenshot_url}")
+            logger.info(
+                "Capturing screenshot",
+                extra={
+                    "json_fields": {
+                        "url": screenshot_url,
+                        "operation": "social_content_capture_screenshot",
+                    },
+                    "labels": {"component": "feeds"},
+                },
+            )
 
             # Capture screenshot using ScrapeDoClient
             result = await scrape_client.scrape_with_screenshot(
@@ -1334,7 +1427,7 @@ async def generate_social_media_content(
                 width=1920,
                 height=1080,
                 particularScreenShot="#static-view",
-                waitForImages=True,
+                geoCode="is",
             )
 
             screenshot_data = result.get("screenshot_data")
@@ -1342,7 +1435,14 @@ async def generate_social_media_content(
                 raise Exception("No screenshot data received")
 
             logger.info(
-                f"Screenshot captured, data length: {len(screenshot_data)} bytes"
+                "Screenshot captured",
+                extra={
+                    "json_fields": {
+                        "bytes": len(screenshot_data),
+                        "operation": "social_content_screenshot_captured",
+                    },
+                    "labels": {"component": "feeds"},
+                },
             )
 
             # Upload screenshot to CloudFlare
@@ -1353,10 +1453,28 @@ async def generate_social_media_content(
             )
 
             image_url = image_screenshot.url
-            logger.info(f"Screenshot uploaded successfully: {image_url}")
+            logger.info(
+                "Screenshot uploaded successfully",
+                extra={
+                    "json_fields": {
+                        "image_url": image_url,
+                        "operation": "social_content_screenshot_uploaded",
+                    },
+                    "labels": {"component": "feeds"},
+                },
+            )
 
         except Exception as e:
-            logger.error(f"Error capturing screenshot: {str(e)}")
+            logger.error(
+                "Error capturing screenshot",
+                extra={
+                    "json_fields": {
+                        "error_message": str(e),
+                        "operation": "social_content_screenshot_error",
+                    },
+                    "labels": {"component": "feeds", "severity": "high"},
+                },
+            )
             raise HTTPException(
                 status_code=500, detail=f"Error generating screenshot: {str(e)}"
             )
@@ -1449,7 +1567,16 @@ def extract_social_media_url(text):
     if text.startswith("@"):
         text = text[1:]
 
-    print(f"Extracting social media URL from: {text}")
+    logger.info(
+        "Extracting social media URL",
+        extra={
+            "json_fields": {
+                "text_length": len(text),
+                "operation": "extract_social_media_url",
+            },
+            "labels": {"component": "feeds"},
+        },
+    )
 
     # **Prioritize YouTube extraction**
     youtube_pattern = (
@@ -1464,7 +1591,13 @@ def extract_social_media_url(text):
         # Simple clean-up for potential extra chars
         full_url = full_url.split()[0]
 
-        print(f"Extracted YouTube URL: {full_url}")
+        logger.info(
+            "Extracted YouTube URL",
+            extra={
+                "json_fields": {"url": full_url, "operation": "extract_youtube"},
+                "labels": {"component": "feeds"},
+            },
+        )
         return {"url": full_url, "platform": "youtube"}
 
     # **Then check for Facebook**
@@ -1476,7 +1609,13 @@ def extract_social_media_url(text):
     if match:
         fbid = match.group(1)
         full_url = f"https://www.facebook.com/{fbid}"
-        print(f"Converted Facebook photo URL to direct format: {full_url}")
+        logger.info(
+            "Converted Facebook photo URL to direct format",
+            extra={
+                "json_fields": {"url": full_url, "operation": "extract_facebook"},
+                "labels": {"component": "feeds"},
+            },
+        )
         return {"url": full_url, "platform": "facebook"}
 
     # Check for mobile Facebook URLs and convert to standard web format
@@ -1489,7 +1628,13 @@ def extract_social_media_url(text):
         user_id = match.group(2)
         # Convert to standard web format
         full_url = f"https://www.facebook.com/{user_id}/posts/{story_fbid}"
-        print(f"Converted mobile Facebook URL to standard web format: {full_url}")
+        logger.info(
+            "Converted mobile Facebook URL to standard web format",
+            extra={
+                "json_fields": {"url": full_url, "operation": "extract_facebook"},
+                "labels": {"component": "feeds"},
+            },
+        )
         return {"url": full_url, "platform": "facebook"}
 
     # Updated Facebook patterns
@@ -1521,7 +1666,16 @@ def extract_social_media_url(text):
             # Clean up potential trailing characters
             full_url = full_url.split()[0]
 
-            print(f"Extracted Facebook URL: {full_url}")
+            logger.info(
+                "Extracted Facebook URL",
+                extra={
+                    "json_fields": {
+                        "url": full_url,
+                        "operation": "extract_facebook",
+                    },
+                    "labels": {"component": "feeds"},
+                },
+            )
             return {"url": full_url, "platform": "facebook"}
 
     # **Finally, check for X/Twitter**
@@ -1539,8 +1693,20 @@ def extract_social_media_url(text):
         full_url = match.group(1)
         full_url = full_url.split()[0]
 
-        print(f"Extracted X/Twitter URL: {full_url}")
+        logger.info(
+            "Extracted X/Twitter URL",
+            extra={
+                "json_fields": {"url": full_url, "operation": "extract_x"},
+                "labels": {"component": "feeds"},
+            },
+        )
         return {"url": full_url, "platform": "x"}
 
-    print("No social media URL found in text")
+    logger.info(
+        "No social media URL found in text",
+        extra={
+            "json_fields": {"operation": "extract_social_media_url_none"},
+            "labels": {"component": "feeds"},
+        },
+    )
     return None

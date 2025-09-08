@@ -1,8 +1,10 @@
 import logging
+from typing import Optional
 
 from ment_api.models.image_with_dims import ImageWithDims
 from ment_api.services.external_clients.langfuse_client import langfuse
 from ment_api.services.google_storage_service import upload_image_verification
+import httpx
 
 logger = logging.getLogger(__name__)
 

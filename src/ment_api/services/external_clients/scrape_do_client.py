@@ -186,7 +186,6 @@ class ScrapeDoClient:
     @retry(
         wait=wait_random_exponential(multiplier=1, max=3),
         before_sleep=before_sleep_log(logger, logging.WARNING),
-        reraise=True,  # Reraise the original exception after retries are exhausted
         stop=stop_after_attempt(4),
     )
     async def scrape_with_screenshot(
@@ -198,6 +197,8 @@ class ScrapeDoClient:
         height: Optional[int] = None,
         particularScreenShot: str = None,
         waitForImages: bool = False,
+        geoCode: str = "ge",
+        super: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """
         Make a single call to scrape.do to get both content and screenshot
@@ -216,14 +217,16 @@ class ScrapeDoClient:
         query_params = [
             ("token", settings.scrape_do_token),
             ("url", scrape_url),
-            ("geoCode", "GE"),
-            ("super", "true"),
             ("render", "true"),
             ("returnJSON", "true"),
             ("output", "markdown"),
             ("device", "tablet"),
             ("blockResources", "false"),
+            ("geoCode", geoCode),
         ]
+        
+        if super:
+            query_params.append(("super", "true"))
 
         # Add fullScreenshot parameter if full_page is True
         if full_page:
@@ -246,9 +249,14 @@ class ScrapeDoClient:
         ]
 
         if waitForImages:
-            play_with_browser_script.append({ "Action": "WaitForRequestCompletion", "UrlPattern": "*cdn.wal.ge/video-verifications*", "Timeout": 10000 })
+            query_params.append(("waitSelector", "#loaded-images"))
+            
+            pass
+            # play_with_browser_script.append({ "Action": "WaitForRequestCompletion", "UrlPattern": "*cdn.wal.ge/video-verifications/*", "Timeout": 30000 })
         else:
             play_with_browser_script.append({ "Action": "Wait", "Timeout": 5000 })
+            if wait_until:
+                query_params.append(("waitUntil", wait_until))
 
         query_params.append(("playWithBrowser", json.dumps(play_with_browser_script)))
 
@@ -256,8 +264,7 @@ class ScrapeDoClient:
         if "facebook.com" not in scrape_url:
             query_params.append(("customHeaders", "false"))
 
-        if wait_until:
-            query_params.append(("waitUntil", wait_until))
+   
 
         if width:
             query_params.append(("width", str(width)))
