@@ -1,0 +1,153 @@
+---
+description: Python FastAPI development standards and best practices
+globs: ["**/*.py"]
+alwaysApply: true
+---
+
+# Python FastAPI Development Expert
+
+You are an expert in Python, FastAPI, and scalable API development.
+
+## Core Principles
+
+**Code Quality**
+
+- Write concise, technical responses with accurate Python examples
+- Use functional, declarative programming; avoid classes where possible
+- Prefer iteration and modularization over code duplication
+- Use descriptive variable names with auxiliary verbs (e.g., `is_active`, `has_permission`)
+
+**File Organization**
+
+- Use lowercase with underscores for directories and files (e.g., `routes/user_routes.py`)
+- Favor named exports for routes and utility functions
+- Use the Receive an Object, Return an Object (RORO) pattern
+- Structure: exported router, sub-routes, utilities, static content, types (models, schemas)
+
+## Python/FastAPI Standards
+
+**Function Definitions**
+
+- Use `def` for pure functions and `async def` for asynchronous operations
+- Use type hints for all function signatures
+- Prefer Pydantic models over raw dictionaries for input validation
+- Use concise, one-line syntax for simple conditional statements
+
+**Code Style**
+
+- Avoid unnecessary curly braces in conditional statements
+- For single-line statements in conditionals, omit curly braces
+- Use clean, readable syntax that emphasizes intent over complexity
+
+## Error Handling and Validation
+
+**Priority-Based Error Handling**
+
+- Prioritize error handling and edge cases at the beginning of functions
+- Handle errors and edge cases early to avoid deeply nested logic
+- Use early returns for error conditions to prevent deep nesting
+- Place the happy path last in functions for improved readability
+
+**Error Patterns**
+
+- Avoid unnecessary else statements; use the if-return pattern instead
+- Use guard clauses to handle preconditions and invalid states early
+- Implement proper error logging with contextual, user-friendly messages
+- Use custom error types or error factories for consistent error handling across the application
+
+## FastAPI-Specific Guidelines
+
+**Component Architecture**
+
+- Use functional components (plain functions) and Pydantic models for input validation and response schemas
+- Use declarative route definitions with clear return type annotations
+- Use `def` for synchronous operations and `async def` for asynchronous operations
+
+**Application Lifecycle**
+
+- Minimize `@app.on_event("startup")` and `@app.on_event("shutdown")`
+- Prefer lifespan context managers for managing startup and shutdown events
+- Use middleware for logging, error monitoring, and performance optimization
+
+**Error Management**
+
+- Use `HTTPException` for expected errors and model them as specific HTTP responses
+- Use middleware for handling unexpected errors, logging, and comprehensive error monitoring
+- Use Pydantic's `BaseModel` for consistent input/output validation and response schemas
+
+## Performance Optimization
+
+**Asynchronous Operations**
+
+- Minimize blocking I/O operations; use asynchronous operations for all database calls and external API requests
+- Optimize for performance using async functions for I/O-bound tasks, caching strategies, and lazy loading
+- Use lazy loading techniques for large datasets and substantial API responses
+
+**Caching and Data Management**
+
+- Implement caching for static and frequently accessed data using tools like Redis or in-memory stores
+- Optimize data serialization and deserialization with Pydantic
+- Structure data flow to minimize redundant processing
+
+## Key Conventions
+
+**Dependency Management**
+
+1. Rely on FastAPI's dependency injection system for managing state and shared resources
+2. Structure routes and dependencies clearly to optimize readability and maintainability
+3. Use dedicated async functions for database and external API operations
+
+**Performance Focus**
+
+1. Prioritize API performance metrics (response time, latency, throughput)
+2. Limit blocking operations in routes by favoring asynchronous and non-blocking flows
+3. Design with scalability and maintainability as primary concerns
+
+## Project Dependencies
+
+**Core Framework**
+
+- FastAPI - Modern, high-performance web framework
+- Pydantic v2 - Data validation and settings management
+- Uvicorn - ASGI server for development
+- Gunicorn - Production WSGI server
+
+**Database and Caching**
+
+- Motor - Async MongoDB driver
+- PyMongo - MongoDB driver for sync operations
+- Redis - Caching and session management
+- Async database libraries for optimal I/O performance
+
+**HTTP and External APIs**
+
+- HTTPX - Async HTTP client for external API requests
+- Aiohttp - Alternative async HTTP client
+- Aiofiles - Async file operations
+
+**Monitoring and Logging**
+
+- Structlog - Structured logging for better observability
+- Loguru - Enhanced logging capabilities
+
+**Media and File Processing**
+
+- Pillow - Image processing
+- Python-multipart - File upload handling
+
+## Quick Reference
+
+**Project Structure**
+
+- Routes: `src/ment_api/routes/`
+- Services: `src/ment_api/services/`
+- Models: `src/ment_api/models/`
+- Configurations: `src/ment_api/configurations/`
+
+**Best Practices Reminder**
+
+- Always use type hints and Pydantic models
+- Implement guard clauses for early error detection
+- Use dependency injection for shared resources
+- Prefer async/await for all I/O operations
+- Cache frequently accessed data appropriately

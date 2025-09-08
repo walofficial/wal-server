@@ -12,7 +12,10 @@ All logging MUST use this exact pattern:
 ```python
 import logging
 
-logging.info(
+# Always use module-specific logger
+logger = logging.getLogger(__name__)
+
+logger.info(
     "Human readable message",
     extra={
         "json_fields": {"key": "value", "operation": "operation_name"},
@@ -37,7 +40,9 @@ These fields are automatically detected:
 Manual override via `extra` argument:
 
 ```python
-logging.info("Request processed", extra={
+logger = logging.getLogger(__name__)
+
+logger.info("Request processed", extra={
     "json_fields": {"user_id": "123", "operation": "auth"},
     "labels": {"service": "ment_api"},
     "http_request": {"requestUrl": "/login", "requestMethod": "POST"},
@@ -50,7 +55,9 @@ logging.info("Request processed", extra={
 **Error logging:**
 
 ```python
-logging.error("Database failed", extra={
+logger = logging.getLogger(__name__)
+
+logger.error("Database failed", extra={
     "json_fields": {"error_code": "DB_001", "operation": "db_connect"},
     "labels": {"component": "database", "severity": "high"}
 })
@@ -59,7 +66,9 @@ logging.error("Database failed", extra={
 **Business event:**
 
 ```python
-logging.info("Fact verified", extra={
+logger = logging.getLogger(__name__)
+
+logger.info("Fact verified", extra={
     "json_fields": {"fact_id": "f123", "confidence": 0.95, "operation": "fact_check"},
     "labels": {"service": "fact_checker"}
 })
