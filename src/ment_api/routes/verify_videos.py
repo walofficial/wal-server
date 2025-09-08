@@ -98,7 +98,7 @@ async def submit_user_video_verification_location_upload(
     dest_file_full_name = f"{dest_file_name}{dest_file_extension}"
 
     try:
-        uploaded_url = upload_video_verification(
+        uploaded_url = await upload_video_verification(
             video_file.file, dest_file_full_name, video_file.content_type
         )
     except Exception:
@@ -167,7 +167,7 @@ async def execute_user_video_verification_location_upload(
             )
 
         file_full_name = f"{file_name}{extension}"
-        file = download_video_verification(file_full_name)
+        file = await download_video_verification(file_full_name)
 
         result = await execute_file_verification(
             file,

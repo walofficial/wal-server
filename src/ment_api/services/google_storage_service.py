@@ -1,31 +1,253 @@
 import io
+import logging
 from typing import BinaryIO
 
-from google.cloud import storage
+from gcloud.aio.storage import Storage
+from PIL import Image
 
 from ment_api.configurations.config import settings
+from ment_api.models.image_with_dims import ImageWithDims
 
-client = storage.Client(project=settings.gcp_project_id)
 
-
-def upload_video_verification(
+async def upload_video_verification(
     file: BinaryIO, destination_file_name: str, content_type: str
 ) -> str:
-    bucket = client.bucket(settings.storage_bucket_name)
-    blob = bucket.blob(
-        f"{settings.storage_video_verification_path}{destination_file_name}"
+    object_name = f"{settings.storage_video_verification_path}{destination_file_name}"
+
+    logging.info(
+        "Starting video verification upload",
+        extra={
+            "json_fields": {
+                "operation": "upload_video_verification",
+                "destination_file_name": destination_file_name,
+                "content_type": content_type,
+                "bucket": settings.storage_bucket_name,
+            },
+            "labels": {"component": "google_storage_service"},
+        },
     )
-    blob.upload_from_file(file, content_type=content_type)
-    return blob.public_url
+
+    try:
+        async with Storage() as client:
+            file_data = file.read()
+
+            await client.upload(
+                bucket=settings.storage_bucket_name,
+                object_name=object_name,
+                file_data=file_data,
+                content_type=content_type,
+            )
+
+            public_url = f"https://storage.cloud.google.com/{settings.storage_bucket_name}/{object_name}"
+
+            logging.info(
+                "Video verification upload completed",
+                extra={
+                    "json_fields": {
+                        "operation": "upload_video_verification",
+                        "destination_file_name": destination_file_name,
+                        "public_url": public_url,
+                        "file_size_bytes": len(file_data),
+                    },
+                    "labels": {"component": "google_storage_service"},
+                },
+            )
+
+            return public_url
+
+    except Exception as e:
+        logging.error(
+            "Video verification upload failed",
+            extra={
+                "json_fields": {
+                    "operation": "upload_video_verification",
+                    "destination_file_name": destination_file_name,
+                    "error": str(e),
+                },
+                "labels": {"component": "google_storage_service", "severity": "high"},
+            },
+        )
+        raise
 
 
-def download_video_verification(file_name: str) -> BinaryIO:
-    bucket = client.bucket(settings.storage_bucket_name)
-    blob = bucket.blob(f"{settings.storage_video_verification_path}{file_name}")
-    file = io.BytesIO()
-    blob.download_to_file(file)
-    file.seek(0)
-    return file
+async def upload_image_verification(
+    file: bytes, destination_file_name: str, content_type: str
+) -> ImageWithDims:
+    """
+    Upload image to Google Cloud Storage and extract dimensions.
+
+    Args:
+        file: Image file bytes
+        destination_file_name: Name of the destination file
+        content_type: MIME type of the image
+
+    Returns:
+        ImageWithDims: Object containing URL, dimensions, and aspect ratio
+    """
+    object_name = f"{settings.storage_video_verification_path}{destination_file_name}"
+
+    logging.info(
+        "Starting image verification upload",
+        extra={
+            "json_fields": {
+                "operation": "upload_image_verification",
+                "destination_file_name": destination_file_name,
+                "content_type": content_type,
+                "bucket": settings.storage_bucket_name,
+                "file_size_bytes": len(file),
+            },
+            "labels": {"component": "google_storage_service"},
+        },
+    )
+
+    try:
+        # Extract image dimensions
+        image_stream = io.BytesIO(file)
+        img = Image.open(image_stream)
+        width, height = img.size
+
+        # Upload to storage
+        async with Storage() as client:
+            await client.upload(
+                bucket=settings.storage_bucket_name,
+                object_name=object_name,
+                file_data=file,
+                content_type=content_type,
+            )
+
+            public_url = f"https://storage.cloud.google.com/{settings.storage_bucket_name}/{object_name}"
+
+            result = ImageWithDims(
+                url=public_url,
+                width=width,
+                height=height,
+                aspectRatio={"width": width, "height": height},
+            )
+
+            logging.info(
+                "Image verification upload completed",
+                extra={
+                    "json_fields": {
+                        "operation": "upload_image_verification",
+                        "destination_file_name": destination_file_name,
+                        "public_url": public_url,
+                        "file_size_bytes": len(file),
+                        "image_width": width,
+                        "image_height": height,
+                    },
+                    "labels": {"component": "google_storage_service"},
+                },
+            )
+
+            return result
+
+    except Exception as e:
+        # If dimension extraction fails, try upload with default dimensions
+        try:
+            async with Storage() as client:
+                await client.upload(
+                    bucket=settings.storage_bucket_name,
+                    object_name=object_name,
+                    file_data=file,
+                    content_type=content_type,
+                )
+
+                public_url = f"https://storage.cloud.google.com/{settings.storage_bucket_name}/{object_name}"
+
+                result = ImageWithDims(
+                    url=public_url,
+                    width=1920,
+                    height=1080,
+                    aspectRatio={"width": 1920, "height": 1080},
+                )
+
+                logging.warning(
+                    "Image verification upload completed with default dimensions",
+                    extra={
+                        "json_fields": {
+                            "operation": "upload_image_verification",
+                            "destination_file_name": destination_file_name,
+                            "public_url": public_url,
+                            "file_size_bytes": len(file),
+                            "dimension_extraction_error": str(e),
+                            "used_default_dimensions": True,
+                        },
+                        "labels": {"component": "google_storage_service"},
+                    },
+                )
+
+                return result
+
+        except Exception as upload_error:
+            logging.error(
+                "Image verification upload failed",
+                extra={
+                    "json_fields": {
+                        "operation": "upload_image_verification",
+                        "destination_file_name": destination_file_name,
+                        "error": str(upload_error),
+                        "original_dimension_error": str(e),
+                    },
+                    "labels": {
+                        "component": "google_storage_service",
+                        "severity": "high",
+                    },
+                },
+            )
+            raise upload_error
+
+
+async def download_video_verification(file_name: str) -> BinaryIO:
+    object_name = f"{settings.storage_video_verification_path}{file_name}"
+
+    logging.info(
+        "Starting video verification download",
+        extra={
+            "json_fields": {
+                "operation": "download_video_verification",
+                "file_name": file_name,
+                "bucket": settings.storage_bucket_name,
+            },
+            "labels": {"component": "google_storage_service"},
+        },
+    )
+
+    try:
+        async with Storage() as client:
+            data = await client.download(
+                bucket=settings.storage_bucket_name, object_name=object_name
+            )
+
+            file = io.BytesIO(data)
+            file.seek(0)
+
+            logging.info(
+                "Video verification download completed",
+                extra={
+                    "json_fields": {
+                        "operation": "download_video_verification",
+                        "file_name": file_name,
+                        "file_size_bytes": len(data),
+                    },
+                    "labels": {"component": "google_storage_service"},
+                },
+            )
+
+            return file
+
+    except Exception as e:
+        logging.error(
+            "Video verification download failed",
+            extra={
+                "json_fields": {
+                    "operation": "download_video_verification",
+                    "file_name": file_name,
+                    "error": str(e),
+                },
+                "labels": {"component": "google_storage_service", "severity": "high"},
+            },
+        )
+        raise
 
 
 def build_raw_video_path(file_name: str) -> str:
@@ -48,7 +270,7 @@ def build_public_video_mp4_path(file_name: str) -> str:
     return f"https://storage.cloud.google.com/{settings.storage_bucket_name}/{settings.storage_video_verification_path}{file_name}"
 
 
-def check_blob_exists(blob_path: str, bucket_name: str = None) -> bool:
+async def check_blob_exists(blob_path: str, bucket_name: str = None) -> bool:
     """
     Checks if a blob exists in the specified bucket.
 
@@ -62,9 +284,130 @@ def check_blob_exists(blob_path: str, bucket_name: str = None) -> bool:
     if bucket_name is None:
         bucket_name = settings.storage_bucket_name
 
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(blob_path)
-    return blob.exists()
+    logging.info(
+        "Checking blob existence",
+        extra={
+            "json_fields": {
+                "operation": "check_blob_exists",
+                "blob_path": blob_path,
+                "bucket_name": bucket_name,
+            },
+            "labels": {"component": "google_storage_service"},
+        },
+    )
+
+    try:
+        async with Storage() as client:
+            bucket = client.get_bucket(bucket_name)
+            exists = await bucket.blob_exists(blob_path)
+
+            logging.info(
+                "Blob existence check completed",
+                extra={
+                    "json_fields": {
+                        "operation": "check_blob_exists",
+                        "blob_path": blob_path,
+                        "bucket_name": bucket_name,
+                        "exists": exists,
+                    },
+                    "labels": {"component": "google_storage_service"},
+                },
+            )
+
+            return exists
+
+    except Exception as e:
+        logging.error(
+            "Blob existence check failed",
+            extra={
+                "json_fields": {
+                    "operation": "check_blob_exists",
+                    "blob_path": blob_path,
+                    "bucket_name": bucket_name,
+                    "error": str(e),
+                },
+                "labels": {"component": "google_storage_service", "severity": "high"},
+            },
+        )
+        raise
+
+
+async def upload_file_from_path(
+    source_file_path: str, destination_blob_name: str, bucket_name: str = None
+) -> str:
+    """
+    Upload a file from local filesystem to GCS bucket.
+
+    Args:
+        source_file_path: Path to the local file to upload
+        destination_blob_name: Name of the destination blob in GCS
+        bucket_name: Name of the bucket (defaults to settings.storage_bucket_name)
+
+    Returns:
+        str: GCS URI of the uploaded file
+    """
+    if bucket_name is None:
+        bucket_name = settings.storage_bucket_name
+
+    logging.info(
+        "Starting file upload from path",
+        extra={
+            "json_fields": {
+                "operation": "upload_file_from_path",
+                "source_file_path": source_file_path,
+                "destination_blob_name": destination_blob_name,
+                "bucket_name": bucket_name,
+            },
+            "labels": {"component": "google_storage_service"},
+        },
+    )
+
+    try:
+        # Read file data
+        with open(source_file_path, "rb") as file:
+            file_data = file.read()
+
+        async with Storage() as client:
+            await client.upload(
+                bucket=bucket_name,
+                object_name=destination_blob_name,
+                file_data=file_data,
+            )
+
+            gcs_uri = f"gs://{bucket_name}/{destination_blob_name}"
+
+            logging.info(
+                "File upload from path completed",
+                extra={
+                    "json_fields": {
+                        "operation": "upload_file_from_path",
+                        "source_file_path": source_file_path,
+                        "destination_blob_name": destination_blob_name,
+                        "bucket_name": bucket_name,
+                        "gcs_uri": gcs_uri,
+                        "file_size_bytes": len(file_data),
+                    },
+                    "labels": {"component": "google_storage_service"},
+                },
+            )
+
+            return gcs_uri
+
+    except Exception as e:
+        logging.error(
+            "File upload from path failed",
+            extra={
+                "json_fields": {
+                    "operation": "upload_file_from_path",
+                    "source_file_path": source_file_path,
+                    "destination_blob_name": destination_blob_name,
+                    "bucket_name": bucket_name,
+                    "error": str(e),
+                },
+                "labels": {"component": "google_storage_service", "severity": "high"},
+            },
+        )
+        raise
 
 
 def build_gcs_uri(blob_path: str, bucket_name: str = None) -> str:

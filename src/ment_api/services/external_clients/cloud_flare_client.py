@@ -1,69 +1,17 @@
-import asyncio
-import io
 import logging
 
-from PIL import Image
-
-from ment_api.configurations.config import settings
 from ment_api.models.image_with_dims import ImageWithDims
 from ment_api.services.external_clients.langfuse_client import langfuse
-from ment_api.services.google_storage_service import client
+from ment_api.services.google_storage_service import upload_image_verification
 
 logger = logging.getLogger(__name__)
-
-
-def _upload_image_sync(
-    file: bytes, destination_file_name: str, content_type: str
-) -> ImageWithDims:
-    """Synchronous upload function to run in thread pool"""
-    try:
-        # Log file size
-        logger.info(
-            f"Processing image {destination_file_name} with size {len(file)} bytes"
-        )
-
-        # Get image dimensions
-        image_stream = io.BytesIO(file)
-        img = Image.open(image_stream)
-        width, height = img.size
-
-        # Upload to storage
-        bucket = client.bucket(settings.storage_bucket_name)
-        blob = bucket.blob(
-            f"{settings.storage_video_verification_path}{destination_file_name}"
-        )
-        blob.upload_from_file(io.BytesIO(file), content_type=content_type)
-
-        return ImageWithDims(
-            url=blob.public_url,
-            width=width,
-            height=height,
-            aspectRatio={"width": width, "height": height},
-        )
-
-    except Exception as e:
-        logger.error(f"Error processing image {destination_file_name}: {e}")
-        # Upload file even if dimension extraction fails
-        bucket = client.bucket(settings.storage_bucket_name)
-        blob = bucket.blob(
-            f"{settings.storage_video_verification_path}{destination_file_name}"
-        )
-        blob.upload_from_file(io.BytesIO(file), content_type=content_type)
-
-        return ImageWithDims(
-            url=blob.public_url,
-            width=1920,
-            height=1080,
-            aspectRatio={"width": 1920, "height": 1080},
-        )
 
 
 async def upload_image(
     file: bytes, destination_file_name: str, content_type: str
 ) -> ImageWithDims:
     """
-    Async function to upload image to cloud storage.
-    Runs blocking operations in thread pool to maintain asyncio compatibility.
+    Async function to upload image to cloud storage using the google_storage_service.
     """
     with langfuse.start_as_current_span(name="cloud-storage-upload") as upload_span:
         upload_span.update(
@@ -79,11 +27,9 @@ async def upload_image(
         )
 
         try:
-            loop = asyncio.get_running_loop()
-
-            # Run the blocking upload operation in thread pool
-            result = await loop.run_in_executor(
-                None, _upload_image_sync, file, destination_file_name, content_type
+            # Use the new async function from google_storage_service
+            result = await upload_image_verification(
+                file, destination_file_name, content_type
             )
 
             upload_span.update(
@@ -140,11 +86,3 @@ async def upload_image(
                 exc_info=True,
             )
             raise
-
-
-# Keep the synchronous version for backward compatibility if needed
-def upload_image_sync(
-    file: bytes, destination_file_name: str, content_type: str
-) -> ImageWithDims:
-    """Synchronous version - use upload_image() instead for async contexts"""
-    return _upload_image_sync(file, destination_file_name, content_type)
