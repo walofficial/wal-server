@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 from bson import ObjectId
 from google.genai.types import GenerateContentConfig, Part, ThinkingConfig
 from langfuse import observe
+from PIL import Image
 from pydantic import BaseModel, Field
 from tenacity import (
     before_sleep_log,
@@ -53,77 +54,158 @@ MAX_FILE_SIZE = 100 * 1024
 
 def compress_image(image_data: bytes, max_size: int = MAX_FILE_SIZE) -> bytes:
     """
-    Compress an image to be under the specified maximum size
+    Efficiently compress an image to be under the specified maximum size.
+    Uses smart estimation and binary search for optimal performance.
 
     Args:
         image_data: The original image data as bytes
-        max_size: Maximum file size in bytes (default: 300KB)
+        max_size: Maximum file size in bytes (default: 100KB)
 
     Returns:
         Compressed image data as bytes
     """
+    if not image_data:
+        raise ValueError("Image data cannot be empty")
+
+    if len(image_data) <= max_size:
+        return image_data
+
+    # PIL is imported at module level
+
     try:
-        from PIL import Image
+        # Open and prepare image
+        img = Image.open(io.BytesIO(image_data))
 
-        # Open the image
-        image_stream = io.BytesIO(image_data)
-        img = Image.open(image_stream)
-
-        # Convert to RGB if necessary (for JPEG compression)
+        # Convert to RGB for JPEG compression if needed
         if img.mode in ("RGBA", "LA", "P"):
             img = img.convert("RGB")
 
-        # Start with high quality and reduce until we're under the size limit
-        quality = 95
-        min_quality = 20
-
-        while quality >= min_quality:
-            output_stream = io.BytesIO()
-            img.save(output_stream, format="JPEG", quality=quality, optimize=True)
-            compressed_data = output_stream.getvalue()
-
-            if len(compressed_data) <= max_size:
-                logger.info(
-                    f"Image compressed to {len(compressed_data)} bytes with quality {quality}"
-                )
-                return compressed_data
-
-            quality -= 5
-
-        # If still too large, try reducing dimensions
         original_width, original_height = img.size
-        scale_factor = 0.9
 
-        while scale_factor > 0.3:  # Don't scale down too much
-            new_width = int(original_width * scale_factor)
-            new_height = int(original_height * scale_factor)
-            resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        # Strategy 1: Smart quality compression with binary search
+        result = _compress_by_smart_quality(img, max_size)
+        if result:
+            return result
 
-            # Try with moderate quality
+        # Strategy 2: Combined resizing with optimized quality
+        return _compress_by_smart_resize(img, max_size, original_width, original_height)
+
+    except Exception:
+        return image_data
+
+
+def _compress_by_smart_quality(img: Image.Image, max_size: int) -> Optional[bytes]:
+    """
+    Use binary search to find optimal quality level efficiently.
+
+    Args:
+        img: PIL Image object to compress
+        max_size: Maximum file size in bytes
+
+    Returns:
+        Compressed image bytes if successful, None if impossible
+    """
+    low_quality, high_quality = 10, 95
+    best_result: Optional[bytes] = None
+
+    # Quick check if even highest compression won't work
+    test_stream = io.BytesIO()
+    img.save(test_stream, format="JPEG", quality=low_quality, optimize=True)
+    if len(test_stream.getvalue()) > max_size:
+        return None
+
+    while low_quality <= high_quality:
+        mid_quality = (low_quality + high_quality) // 2
+
+        output_stream = io.BytesIO()
+        img.save(output_stream, format="JPEG", quality=mid_quality, optimize=True)
+        compressed_data = output_stream.getvalue()
+
+        if len(compressed_data) <= max_size:
+            best_result = compressed_data
+            low_quality = mid_quality + 1  # Try higher quality
+        else:
+            high_quality = mid_quality - 1  # Lower quality needed
+
+    return best_result
+
+
+def _compress_by_smart_resize(
+    img: Image.Image, max_size: int, original_width: int, original_height: int
+) -> bytes:
+    """
+    Intelligently resize image based on size estimation and use binary search for scale factor.
+
+    Args:
+        img: PIL Image object to resize and compress
+        max_size: Maximum file size in bytes
+        original_width: Original image width in pixels
+        original_height: Original image height in pixels
+
+    Returns:
+        Compressed image bytes (guaranteed to return a result)
+    """
+
+    # Estimate compression ratio needed
+    test_stream = io.BytesIO()
+    img.save(test_stream, format="JPEG", quality=75, optimize=True)
+    current_size: int = len(test_stream.getvalue())
+
+    if current_size <= max_size:
+        return test_stream.getvalue()
+
+    # Estimate required scale factor
+    target_ratio: float = max_size / current_size
+    estimated_scale: float = (
+        target_ratio**0.5
+    )  # Square root because area scales quadratically
+
+    # Use binary search around the estimate
+    low_scale: float = max(0.2, estimated_scale * 0.7)
+    high_scale: float = min(1.0, estimated_scale * 1.3)
+    best_result: Optional[bytes] = None
+
+    for _ in range(8):  # Limit iterations
+        mid_scale: float = (low_scale + high_scale) / 2
+
+        new_width: int = int(original_width * mid_scale)
+        new_height: int = int(original_height * mid_scale)
+
+        # Ensure minimum dimensions
+        if new_width < 50 or new_height < 50:
+            break
+
+        resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+        # Try multiple quality levels for this size
+        for quality in [85, 75, 60, 45]:
             output_stream = io.BytesIO()
-            resized_img.save(output_stream, format="JPEG", quality=75, optimize=True)
+            resized_img.save(
+                output_stream, format="JPEG", quality=quality, optimize=True
+            )
             compressed_data = output_stream.getvalue()
 
             if len(compressed_data) <= max_size:
-                logger.info(
-                    f"Image resized to {new_width}x{new_height} and compressed to {len(compressed_data)} bytes"
-                )
-                return compressed_data
+                best_result = compressed_data
+                low_scale = mid_scale  # Try larger size
+                break
+        else:
+            high_scale = mid_scale  # Try smaller size
 
-            scale_factor -= 0.1
+        if abs(high_scale - low_scale) < 0.01:  # Converged
+            break
 
-        # Last resort: use the smallest version we created
-        logger.warning(
-            f"Could not compress image below {max_size} bytes, using best effort compression"
-        )
-        return compressed_data
+    # Fallback: aggressive compression
+    if not best_result:
+        min_width: int = max(50, original_width // 4)
+        min_height: int = max(50, original_height // 4)
+        resized_img = img.resize((min_width, min_height), Image.Resampling.LANCZOS)
 
-    except ImportError:
-        logger.warning("Pillow library is not installed. Cannot compress image.")
-        return image_data
-    except Exception as e:
-        logger.error(f"Error compressing image: {e}")
-        return image_data
+        output_stream = io.BytesIO()
+        resized_img.save(output_stream, format="JPEG", quality=30, optimize=True)
+        best_result = output_stream.getvalue()
+
+    return best_result
 
 
 class SocialMediaParsedContent(BaseModel):
@@ -642,7 +724,9 @@ async def get_enhanced_screenshot(verification_id: str) -> None:
         # Get verification data for additional context
 
         # Build screenshot URL
-        screenshot_url = f"https://wal.ge/status/{verification_id}/facebook-mock?static=true"
+        screenshot_url = (
+            f"https://{settings.wal_url}/status/{verification_id}/facebook-mock?static=true"
+        )
 
         # Capture screenshot using ScrapeDoClient
         result = await client.scrape_with_screenshot(
@@ -658,7 +742,7 @@ async def get_enhanced_screenshot(verification_id: str) -> None:
         )
 
         screenshot_data = result.get("screenshot_data")
-       
+
         image_screenshot = await upload_image(
             file=compress_image(screenshot_data),
             destination_file_name=f"screenshot_enhanced_{verification_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg",

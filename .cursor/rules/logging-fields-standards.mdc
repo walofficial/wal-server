@@ -58,7 +58,11 @@ Every log entry MUST include:
 ## Example from [check_fact_service.py](mdc:src/ment_api/services/check_fact_service.py)
 
 ```python
-logging.info("Fact verification completed", extra={
+import logging
+
+logger = logging.getLogger(__name__)
+
+logger.info("Fact verification completed", extra={
     "json_fields": {
         "operation": "fact_verify",
         "fact_id": fact_id,

@@ -1,6 +1,6 @@
-import asyncio
 import logging
-from ment_api.services.google_storage_service import client
+
+from ment_api.services.google_storage_service import upload_file_from_path
 
 logger = logging.getLogger(__name__)
 
@@ -10,20 +10,39 @@ async def upload_file_to_gcs(
 ) -> str:
     """Uploads a file to the GCS bucket."""
     try:
-        bucket = client.bucket(bucket_name)
-        blob = bucket.blob(destination_blob_name)
+        gcs_uri = await upload_file_from_path(
+            source_file_name, destination_blob_name, bucket_name
+        )
 
-        # Run upload in a separate thread
-        def upload_sync():
-            blob.upload_from_filename(source_file_name)
+        logger.info(
+            "File uploaded to GCS successfully",
+            extra={
+                "json_fields": {
+                    "operation": "upload_file_to_gcs",
+                    "source_file_name": source_file_name,
+                    "destination_blob_name": destination_blob_name,
+                    "bucket_name": bucket_name,
+                    "gcs_uri": gcs_uri,
+                },
+                "labels": {"component": "gcs_service"},
+            },
+        )
 
-        await asyncio.to_thread(upload_sync)
-
-        gcs_uri = f"gs://{bucket_name}/{destination_blob_name}"
-        logger.info(f"File {source_file_name} uploaded to {gcs_uri}.")
         return gcs_uri
     except Exception as e:
-        logger.error(f"Failed to upload {source_file_name} to GCS: {e}")
+        logger.error(
+            "Failed to upload file to GCS",
+            extra={
+                "json_fields": {
+                    "operation": "upload_file_to_gcs",
+                    "source_file_name": source_file_name,
+                    "destination_blob_name": destination_blob_name,
+                    "bucket_name": bucket_name,
+                    "error": str(e),
+                },
+                "labels": {"component": "gcs_service", "severity": "high"},
+            },
+        )
         return None
 
 

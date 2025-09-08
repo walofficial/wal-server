@@ -327,158 +327,156 @@ async def check_fact(request: FactCheckRequest) -> Optional[FactCheckingResult]:
             )
 
             jina_response = await jina_client.chat.completions.create(
-                **jina_request_params
+                messages=jina_request_params["messages"],
+                model=jina_request_params["model"],
+                timeout=jina_request_params["timeout"],
+                extra_body=jina_request_params["extra_body"],
+                response_format=jina_request_params["response_format"],
             )
             response_text = json.loads(jina_response.choices[0].message.content)
 
-        logger.info(
-            "Jina DeepSearch API response received",
-            extra={
-                "json_fields": {
-                    "verification_id": str(request.verification_id),
-                    "response_length": len(jina_response.choices[0].message.content),
-                    "has_response": bool(response_text),
-                    "base_operation": "fact_check",
-                    "operation": "jina_api_response_received",
-                },
-                "labels": {"component": "jina_fact_checker", "phase": "api_call"},
-            },
-        )
-
-        try:
-            jina_response_parsed: JinaFactCheckResponse = (
-                JinaFactCheckResponse.model_validate(response_text)
-            )
-
             logger.info(
-                "Jina response parsed successfully",
+                "Jina DeepSearch API response received",
                 extra={
                     "json_fields": {
                         "verification_id": str(request.verification_id),
-                        "factuality_score": jina_response_parsed.factuality,
-                        "references_count": len(jina_response_parsed.references),
-                        "has_reason": bool(jina_response_parsed.reason),
-                        "has_summary": bool(jina_response_parsed.reason_summary),
+                        "response_length": len(jina_response.choices[0].message.content),
+                        "has_response": bool(response_text),
                         "base_operation": "fact_check",
-                        "operation": "jina_response_parsed",
+                        "operation": "jina_api_response_received",
                     },
-                    "labels": {"component": "jina_fact_checker", "phase": "parse"},
+                    "labels": {"component": "jina_fact_checker", "phase": "api_call"},
                 },
             )
 
-            fact_check_result = FactCheckingResult(
-                factuality=jina_response_parsed.factuality,
-                reason=jina_response_parsed.reason,
-                score_justification=jina_response_parsed.score_justification,
-                reason_summary=jina_response_parsed.reason_summary,
-                references=jina_response_parsed.references,
-                visited_urls=(
-                    jina_response.model_extra.get("visitedURLs", [])
-                    if hasattr(jina_response, "model_extra")
-                    else []
-                ),
-                read_urls=(
-                    jina_response.model_extra.get("readURLs", [])
-                    if hasattr(jina_response, "model_extra")
-                    else []
-                ),
-            )
+            try:
+                jina_response_parsed: JinaFactCheckResponse = (
+                    JinaFactCheckResponse.model_validate(response_text)
+                )
 
-            logger.info(
-                "Jina fact check completed successfully",
-                extra={
-                    "json_fields": {
-                        "verification_id": str(request.verification_id),
+                logger.info(
+                    "Jina response parsed successfully",
+                    extra={
+                        "json_fields": {
+                            "verification_id": str(request.verification_id),
+                            "factuality_score": jina_response_parsed.factuality,
+                            "references_count": len(jina_response_parsed.references),
+                            "has_reason": bool(jina_response_parsed.reason),
+                            "has_summary": bool(jina_response_parsed.reason_summary),
+                            "base_operation": "fact_check",
+                            "operation": "jina_response_parsed",
+                        },
+                        "labels": {"component": "jina_fact_checker", "phase": "parse"},
+                    },
+                )
+
+                fact_check_result = FactCheckingResult(
+                    factuality=jina_response_parsed.factuality,
+                    reason=jina_response_parsed.reason,
+                    score_justification=jina_response_parsed.score_justification,
+                    reason_summary=jina_response_parsed.reason_summary,
+                    references=jina_response_parsed.references,
+                    visited_urls=(
+                        jina_response.model_extra.get("visitedURLs", [])
+                        if hasattr(jina_response, "model_extra")
+                        else []
+                    ),
+                    read_urls=(
+                        jina_response.model_extra.get("readURLs", [])
+                        if hasattr(jina_response, "model_extra")
+                        else []
+                    ),
+                )
+
+                logger.info(
+                    "Jina fact check completed successfully",
+                    extra={
+                        "json_fields": {
+                            "verification_id": str(request.verification_id),
+                            "factuality_score": fact_check_result.factuality,
+                            "references_count": len(fact_check_result.references),
+                            "visited_urls_count": len(fact_check_result.visited_urls),
+                            "read_urls_count": len(fact_check_result.read_urls),
+                            "base_operation": "fact_check",
+                            "operation": "jina_fact_check_success",
+                        },
+                        "labels": {"component": "jina_fact_checker", "phase": "complete"},
+                    },
+                )
+
+                # Update generation with successful result and usage details
+                gen.update(
+                    output={
                         "factuality_score": fact_check_result.factuality,
+                        "reason": jina_response_parsed.reason,
+                        "reason_summary": jina_response_parsed.reason_summary,
                         "references_count": len(fact_check_result.references),
                         "visited_urls_count": len(fact_check_result.visited_urls),
                         "read_urls_count": len(fact_check_result.read_urls),
-                        "base_operation": "fact_check",
-                        "operation": "jina_fact_check_success",
+                        "success": True,
                     },
-                    "labels": {"component": "jina_fact_checker", "phase": "complete"},
-                },
-            )
-
-            # Update generation with successful result and usage details
-            gen.update(
-                output={
-                    "factuality_score": fact_check_result.factuality,
-                    "reason": jina_response_parsed.reason,
-                    "reason_summary": jina_response_parsed.reason_summary,
-                    "references_count": len(fact_check_result.references),
-                    "visited_urls_count": len(fact_check_result.visited_urls),
-                    "read_urls_count": len(fact_check_result.read_urls),
-                    "success": True,
-                },
-                usage_details={
-                    "prompt_tokens": jina_response.usage.prompt_tokens
-                    if hasattr(jina_response, "usage") and jina_response.usage
-                    else None,
-                    "completion_tokens": jina_response.usage.completion_tokens
-                    if hasattr(jina_response, "usage") and jina_response.usage
-                    else None,
-                    "total_tokens": jina_response.usage.total_tokens
-                    if hasattr(jina_response, "usage") and jina_response.usage
-                    else None,
-                },
-                metadata={
-                    "factuality_score": fact_check_result.factuality,
-                    "references_count": len(fact_check_result.references),
-                    "response_length": len(jina_response.choices[0].message.content),
-                    "completion_reason": "success",
-                    "model_version": "gemini-2.5-flash",
-                    "service_version": "jina-deepsearch-v1",
-                },
-            )
-
-            return fact_check_result
-
-        except ValidationError as e:
-            error_msg = f"Failed to parse Jina response: {e}"
-            logger.error(
-                "Failed to parse Jina response",
-                extra={
-                    "json_fields": {
-                        "verification_id": str(request.verification_id),
-                        "error": str(e),
-                        "error_type": "ValidationError",
-                        "response_content_length": len(
-                            jina_response.choices[0].message.content
-                        ),
-                        "base_operation": "fact_check",
-                        "operation": "jina_response_parse_error",
+                    usage_details={
+                        "prompt_tokens": jina_response.usage.prompt_tokens,
+                        "completion_tokens": jina_response.usage.completion_tokens,
+                        "total_tokens": jina_response.usage.total_tokens,
                     },
-                    "labels": {"component": "jina_fact_checker", "severity": "high"},
-                },
-                exc_info=True,
-            )
-
-            # Update generation with parsing error
-            gen.update(
-                output=None,
-                metadata={
-                    "error": error_msg,
-                    "raw_response": jina_response.choices[0].message.content[:500],
-                    "completion_reason": "parsing_failed",
-                },
-            )
-
-            logger.debug(
-                "Jina response content that failed parsing",
-                extra={
-                    "json_fields": {
-                        "verification_id": str(request.verification_id),
-                        "response_content": jina_response.choices[0].message.content[
-                            :500
-                        ],  # First 500 chars for debugging
-                        "base_operation": "fact_check",
-                        "operation": "jina_response_parse_error_debug",
+                    metadata={
+                        "factuality_score": fact_check_result.factuality,
+                        "references_count": len(fact_check_result.references),
+                        "response_length": len(jina_response.choices[0].message.content),
+                        "completion_reason": "success",
+                        "model_version": "gemini-2.5-flash",
+                        "service_version": "jina-deepsearch-v1",
                     },
-                    "labels": {"component": "jina_fact_checker"},
-                },
-            )
-            return None
+                )
+
+                return fact_check_result
+
+            except ValidationError as e:
+                error_msg = f"Failed to parse Jina response: {e}"
+                logger.error(
+                    "Failed to parse Jina response",
+                    extra={
+                        "json_fields": {
+                            "verification_id": str(request.verification_id),
+                            "error": str(e),
+                            "error_type": "ValidationError",
+                            "response_content_length": len(
+                                jina_response.choices[0].message.content
+                            ),
+                            "base_operation": "fact_check",
+                            "operation": "jina_response_parse_error",
+                        },
+                        "labels": {"component": "jina_fact_checker", "severity": "high"},
+                    },
+                    exc_info=True,
+                )
+
+                # Update generation with parsing error
+                gen.update(
+                    output=None,
+                    metadata={
+                        "error": error_msg,
+                        "raw_response": jina_response.choices[0].message.content[:500],
+                        "completion_reason": "parsing_failed",
+                    },
+                )
+
+                logger.debug(
+                    "Jina response content that failed parsing",
+                    extra={
+                        "json_fields": {
+                            "verification_id": str(request.verification_id),
+                            "response_content": jina_response.choices[0].message.content[
+                                :500
+                            ],  # First 500 chars for debugging
+                            "base_operation": "fact_check",
+                            "operation": "jina_response_parse_error_debug",
+                        },
+                        "labels": {"component": "jina_fact_checker"},
+                    },
+                )
+                return None
 
     except Exception as e:
         error_msg = f"Jina fact check failed: {e}"

@@ -1,0 +1,34 @@
+---
+alwaysApply: false
+---
+
+# TXT Docs MCP
+
+## When to Use
+
+Auto-trigger `mcp_txt-docs-mcp` tools when user mentions:
+
+- "documentation", "docs", "llms.txt"
+- "what's available", "list sources"
+- Local/custom documentation access
+
+## Workflow
+
+1. **List first**: `mcp_txt-docs-mcp_list_doc_sources`
+2. **Fetch targeted**: `mcp_txt-docs-mcp_fetch_docs` with specific URLs
+
+## Examples
+
+```
+User: "What docs are available?"
+→ list_doc_sources()
+
+User: "Show me API docs"
+→ list_doc_sources() → fetch_docs(api_url)
+```
+
+## Key Points
+
+- Always list sources before fetching
+- Handle both URLs and local file paths
+- Follow llms.txt → specific pages workflow
