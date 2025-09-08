@@ -4,7 +4,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Optional
 
-import aiohttp
 from fastapi import APIRouter, Body, Header, Query, Request, HTTPException, Depends
 from livekit.api.access_token import AccessToken, VideoGrants
 from livekit.api.ingress_service import IngressService
@@ -79,7 +78,7 @@ async def web(request: Request,  authorization: str = Header(None)):
                 "json_fields": {
                     "operation": "livekit_webhook",
                     "event_type": event_data_json.event,
-                    "raw_body_length": len(rawBody)
+                    "raw_body_length": len(rawBody),
                 },
                 "labels": {
                     "component": "livekit_webhook"
@@ -147,7 +146,6 @@ async def web(request: Request,  authorization: str = Header(None)):
                     {
                         "$set": {
                             "has_recording": False,
-                            "is_live": False,
                             # Set verification in progress so that this errored item will not show up in the feed
                             "state": VerificationState.VERIFICATION_IN_PROGRESS,
                         }
@@ -223,84 +221,79 @@ def generate_live_verification_doc(
     }
 
 
-@router.post(
-    "/request-livekit-ingress",
-    operation_id="request_livekit_ingress",
-    response_model=RequestLivekitIngressResponse,
-)
-async def request_livekit_ingress(
-    request: Request,
-    feed_id: Annotated[CustomObjectId, Body()],
-    text_content: Annotated[Optional[str], Body()] = None,
-    ingress_service: IngressService = Depends(get_ingress_service),
-):
-    user_id = request.state.supabase_user_id
-    room_name = str("ment-live-") + str(uuid.uuid4())
+# @router.post(
+#     "/request-livekit-ingress",
+#     operation_id="request_livekit_ingress",
+#     response_model=RequestLivekitIngressResponse,
+# )
+# async def request_livekit_ingress(
+#     request: Request,
+#     feed_id: Annotated[CustomObjectId, Body()],
+#     text_content: Annotated[Optional[str], Body()] = None,
+#     ingress_service: IngressService = Depends(get_ingress_service),
+# ):
+#     user_id = request.state.supabase_user_id
+#     room_name = str("ment-live-") + str(uuid.uuid4())
 
-    dest_file_name = str(uuid.uuid4())
+#     dest_file_name = str(uuid.uuid4())
 
-    insert_doc = generate_live_verification_doc(
-        feed_id, user_id, room_name, dest_file_name, text_content
-    )
-    verification_doc = await mongo.verifications.insert_one(insert_doc)
+#     insert_doc = generate_live_verification_doc(
+#         feed_id, user_id, room_name, dest_file_name, text_content
+#     )
+#     verification_doc = await mongo.verifications.insert_one(insert_doc)
 
-    ingress = await ingress_service.create_ingress(
-        CreateIngressRequest(
-            room_name=room_name,
-            input_type=IngressInput.RTMP_INPUT,
-            participant_identity="identity",
-            participant_name="identity",
-            enable_transcoding=True,
-        )
-    )
+#     ingress = await ingress_service.create_ingress(
+#         CreateIngressRequest(
+#             room_name=room_name,
+#             input_type=IngressInput.RTMP_INPUT,
+#             participant_identity="identity",
+#             participant_name="identity",
+#             enable_transcoding=True,
+#             egress=RoomEgress(
+#                     participant=AutoParticipantEgress(
+#                         preset=EncodingOptionsPreset.PORTRAIT_H264_1080P_60,
+#                         segment_outputs=[
+#                             SegmentedFileOutput(
+#                                 # Filename prefix is the each of the segment file prefix, that's why we make sure they are in a sub folder
+#                                 filename_prefix=f"livekit-recording/{roomId}/{roomId}",
+#                                 segment_duration=3,
+#                                 gcp=GCPUpload(
+#                                     credentials="",
+#                                     bucket="ment-verification",
+#                                 ),
+#                             ),
+#                         ],
+#                     )
+#                 ),
+#         )
+#     )
 
-    roomId = str(room_name)
-    token = (
-        AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-        # Identity here means that this token is for the user who created the ingress and the room
-        .with_identity(user_id)
-        .with_name(roomId)
-        .with_room_config(
-            RoomConfiguration(
-                max_participants=10,
-                egress=RoomEgress(
-                    participant=AutoParticipantEgress(
-                        preset=EncodingOptionsPreset.PORTRAIT_H264_1080P_60,
-                        segment_outputs=[
-                            SegmentedFileOutput(
-                                # Filename prefix is the each of the segment file prefix, that's why we make sure they are in a sub folder
-                                filename_prefix=f"livekit-recording/{roomId}/{roomId}",
-                                segment_duration=3,
-                                gcp=GCPUpload(
-                                    credentials="",
-                                    bucket="ment-verification",
-                                ),
-                            ),
-                        ],
-                    )
-                ),
-            )
-        )
-        .with_grants(
-            VideoGrants(
-                room_join=True,
-                room=str(room_name),
-            )
-        )
-    )
+#     roomId = str(room_name)
+#     token = (
+#         AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+#         # Identity here means that this token is for the user who created the ingress and the room
+#         .with_identity(user_id)
+#         .with_name(roomId)
+#         .with_grants(
+#             VideoGrants(
+#                 room_join=True,
+#                 room=str(room_name),
+#             )
+#         )
+#     )
 
-    livekit_token = token.to_jwt()
+#     livekit_token = token.to_jwt()
 
-    insert_doc["_id"] = verification_doc.inserted_id
+#     insert_doc["_id"] = verification_doc.inserted_id
 
-    return {
-        "livekit_token": livekit_token,
-        "room_name": room_name,
-        "ingress_url": ingress.url,
-        "ingress_id": ingress.ingress_id,
-        "ingress_name": ingress.name,
-        "ingress_key": ingress.stream_key,
-    }
+#     return {
+#         "livekit_token": livekit_token,
+#         "room_name": room_name,
+#         "ingress_url": ingress.url,
+#         "ingress_id": ingress.ingress_id,
+#         "ingress_name": ingress.name,
+#         "ingress_key": ingress.stream_key,
+#     }
 
 
 @router.post(
@@ -325,21 +318,13 @@ async def start_live(
 
     verification_doc = await mongo.verifications.insert_one(insert_doc)
     roomId = str(room_name)
+    print(settings.gcp_service_account_livekit)
     room = await room_service.create_room(
             CreateRoomRequest(
             name=room_name,
             empty_timeout=30,
             max_participants=1000,
-        )
-    )
-    token = (
-        AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-        .with_identity("identity")
-        .with_name(roomId)
-        .with_room_config(
-            RoomConfiguration(
-                max_participants=10,
-                egress=RoomEgress(
+            egress=RoomEgress(
                     participant=AutoParticipantEgress(
                         preset=EncodingOptionsPreset.PORTRAIT_H264_1080P_60,
                         segment_outputs=[
@@ -348,15 +333,19 @@ async def start_live(
                                 filename_prefix=f"livekit-recording/{roomId}/{roomId}",
                                 segment_duration=3,
                                 gcp=GCPUpload(
-                                    credentials="",
+                                    credentials=settings.gcp_service_account_livekit,
                                     bucket="ment-verification",
                                 ),
                             ),
                         ],
                     )
                 ),
-            )
         )
+    )
+    token = (
+        AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+        .with_identity("identity")
+        .with_name(roomId)
         .with_grants(
             VideoGrants(
                 room_join=True,
@@ -379,7 +368,7 @@ async def stop_live(
 ):
     await mongo.verifications.update_one(
         {"livekit_room_name": room_name},
-        {"$set": {"is_live": False}},
+        {"$set": {"is_live": False, "live_ended_at": datetime.now(timezone.utc)}},
     )
     await room_service.delete_room(DeleteRoomRequest(room=room_name))
     return {"message": "Live stream stopped successfully"}

@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     langfuse_public_key: str
     langfuse_secret_key: str
     langfuse_tracing_environment: str
+    gcp_service_account_livekit: str
 
     model_config = SettingsConfigDict(
         extra="allow",
