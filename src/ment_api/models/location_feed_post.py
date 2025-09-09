@@ -46,7 +46,7 @@ class SocialMediaScrapeStatus(str, Enum):
 
 
 class Source(BaseModel):
-    external_id: str
+    external_id: Optional[str] = None
     title: str
     uri: str
     domain: Optional[str] = None
