@@ -608,8 +608,8 @@ async def save_news(
         logger.info("No news items to insert")
         return []
     # Generate embeddings for all titles
-    titles = [news_item.title for news_item in response.news]
-    title_embeddings = await embedding_service.generate_embeddings(titles)
+    summaries = [news_item.summary for news_item in response.news]
+    summary_embeddings = await embedding_service.generate_embeddings(summaries)
 
     # Convert Pydantic models to plain dicts for MongoDB
     documents = []
@@ -623,7 +623,7 @@ async def save_news(
                 pass
 
         # Add title embedding
-        doc["title_embedding"] = title_embeddings[idx]
+        doc["title_embedding"] = summary_embeddings[idx]
 
         documents.append(doc)
 
