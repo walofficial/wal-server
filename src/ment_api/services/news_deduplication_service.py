@@ -12,7 +12,7 @@ from ment_api.services.external_clients.models.scrape_news_models import NewsIte
 
 logger = logging.getLogger(__name__)
 
-COSINE_SIMILARITY_THRESHOLD = 0.8
+COSINE_SIMILARITY_THRESHOLD = 0.85
 DEFAULT_EMBEDDING = [0.0] * 3072
 
 
@@ -151,7 +151,7 @@ async def deduplicate_news_items(combined_news: List[NewsItem]) -> List[NewsItem
                     "filtered_count": len(filtered_news),
                     "duplicates_removed": duplicate_count,
                     "duplicate_details": duplicate_details[
-                        :5
+                        :15
                     ],  # Log first 5 duplicates for debugging
                     "operation": "deduplicate_news_items",
                 },
