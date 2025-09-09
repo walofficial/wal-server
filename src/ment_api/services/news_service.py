@@ -57,6 +57,7 @@ from ment_api.services.external_clients.scrape_news_publika_client import (
 )
 from ment_api.services.news_deduplication_service import deduplicate_news_items
 from ment_api.services.pub_sub_service import publish_message
+from ment_api.services.redis_service import get_async_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -191,8 +192,26 @@ async def generate_news_from_site_apis(
             else:
                 logger.info("No news items to insert into external_articles")
 
-            # NEW: Deduplicate news items using vector similarity
-            filtered_news = await deduplicate_news_items(combined_news)
+            # STEP 1: Filter out already processed news items from Redis cache
+            # This avoids expensive deduplication processing for items we've already handled
+            unprocessed_news = await filter_unprocessed_news_items(combined_news)
+
+            if not unprocessed_news:
+                logger.info(
+                    "All news items were already processed (found in Redis cache)",
+                    extra={
+                        "json_fields": {
+                            "operation": "generate_news_from_site_apis",
+                            "total_scraped": len(combined_news),
+                            "already_processed": len(combined_news),
+                        },
+                        "labels": {"component": "news_service"},
+                    },
+                )
+                return []
+
+            # STEP 2: Deduplicate remaining news items using vector similarity
+            filtered_news = await deduplicate_news_items(unprocessed_news)
 
             # Process the filtered content into structured news items
             news_response = await structurize_scraped_news(filtered_news)
@@ -450,6 +469,7 @@ async def structurize_scraped_news(
         news_items,
         include={
             "__all__": {
+                "external_id",
                 "title",
                 "content",
                 "details_url",
@@ -528,6 +548,212 @@ async def structurize_scraped_news(
     logger.info(f"Generated news response: {response.text[:100]}")
     news_response: NewsResponse = response.parsed
     return news_response
+
+
+def extract_distinct_external_ids(response: NewsResponse) -> set[str]:
+    """
+    Extract all distinct external IDs from news sources in the response.
+
+    Args:
+        response: NewsResponse containing news items with sources
+
+    Returns:
+        Set of unique external IDs from all sources
+    """
+    external_ids = set()
+
+    for news_item in response.news:
+        for source in news_item.sources:
+            if source.external_id:
+                external_ids.add(source.external_id)
+
+    return external_ids
+
+
+async def cache_external_ids_in_redis(external_ids: set[str]) -> None:
+    """
+    Store external IDs in Redis Set with 24-hour automatic expiration.
+    Uses a single Redis Set to store all external IDs for efficient filtering operations.
+
+    Args:
+        external_ids: Set of external IDs to cache
+    """
+    if not external_ids:
+        logger.info(
+            "No external IDs to cache",
+            extra={
+                "json_fields": {"operation": "cache_external_ids", "count": 0},
+                "labels": {"component": "news_service"},
+            },
+        )
+        return
+
+    redis_client = get_async_redis_client()
+    set_key = "news:processed_external_ids"
+
+    try:
+        # Use Redis pipeline for efficient bulk operations
+        async with redis_client.pipeline() as pipe:
+            # Add all external IDs to the Redis Set
+            pipe.sadd(set_key, *external_ids)
+            # Set expiration for the entire set (24 hours = 86400 seconds)
+            pipe.expire(set_key, 86400)
+
+            await pipe.execute()
+
+        logger.info(
+            "Successfully cached external IDs in Redis Set",
+            extra={
+                "json_fields": {
+                    "operation": "cache_external_ids_set",
+                    "count": len(external_ids),
+                    "expiration_hours": 24,
+                    "set_key": set_key,
+                },
+                "labels": {"component": "news_service"},
+            },
+        )
+
+    except Exception as e:
+        logger.error(
+            "Failed to cache external IDs in Redis Set",
+            extra={
+                "json_fields": {
+                    "operation": "cache_external_ids_set",
+                    "error": str(e),
+                    "count": len(external_ids),
+                    "set_key": set_key,
+                },
+                "labels": {"component": "news_service", "severity": "high"},
+            },
+        )
+        # Don't raise the exception as this is not critical for the main flow
+
+
+async def check_external_ids_in_redis(external_ids: set[str]) -> dict[str, bool]:
+    """
+    Check which external IDs exist in the Redis Set.
+    Useful for filtering external articles based on cached external IDs.
+
+    Args:
+        external_ids: Set of external IDs to check
+
+    Returns:
+        Dictionary mapping external_id -> bool (True if exists in cache)
+    """
+    if not external_ids:
+        return {}
+
+    redis_client = get_async_redis_client()
+    set_key = "news:processed_external_ids"
+
+    try:
+        # Use Redis pipeline for efficient bulk operations
+        async with redis_client.pipeline() as pipe:
+            for external_id in external_ids:
+                pipe.sismember(set_key, external_id)
+
+            results = await pipe.execute()
+
+        # Create mapping of external_id -> existence status
+        existence_map = {
+            external_id: bool(exists)
+            for external_id, exists in zip(external_ids, results)
+        }
+
+        cached_count = sum(existence_map.values())
+
+        logger.info(
+            "Checked external IDs in Redis Set",
+            extra={
+                "json_fields": {
+                    "operation": "check_external_ids_set",
+                    "total_checked": len(external_ids),
+                    "found_cached": cached_count,
+                    "set_key": set_key,
+                },
+                "labels": {"component": "news_service"},
+            },
+        )
+
+        return existence_map
+
+    except Exception as e:
+        logger.error(
+            "Failed to check external IDs in Redis Set",
+            extra={
+                "json_fields": {
+                    "operation": "check_external_ids_set",
+                    "error": str(e),
+                    "total_checked": len(external_ids),
+                    "set_key": set_key,
+                },
+                "labels": {"component": "news_service", "severity": "high"},
+            },
+        )
+        # Return empty dict on error - assume nothing is cached
+        return {}
+
+
+async def filter_unprocessed_news_items(news_items: List[NewsItem]) -> List[NewsItem]:
+    """
+    Filter news items to exclude those with external IDs already cached in Redis.
+    This should be called before deduplicate_news_items to avoid processing already handled articles.
+
+    Args:
+        news_items: List of NewsItem objects with external_id attribute
+
+    Returns:
+        List of NewsItem objects that haven't been processed yet
+    """
+    if not news_items:
+        return news_items
+
+    # Extract external IDs from news items
+    external_ids = {
+        news_item.external_id for news_item in news_items if news_item.external_id
+    }
+
+    if not external_ids:
+        logger.info(
+            "No external IDs found in news items",
+            extra={
+                "json_fields": {
+                    "operation": "filter_unprocessed_news_items",
+                    "total_items": len(news_items),
+                },
+                "labels": {"component": "news_service"},
+            },
+        )
+        return news_items
+
+    # Check which IDs are already cached
+    cached_status = await check_external_ids_in_redis(external_ids)
+
+    # Filter out news items with cached external IDs
+    unprocessed_items = [
+        news_item
+        for news_item in news_items
+        if not cached_status.get(news_item.external_id, False)
+    ]
+
+    filtered_count = len(news_items) - len(unprocessed_items)
+
+    logger.info(
+        "Filtered news items based on Redis cache",
+        extra={
+            "json_fields": {
+                "operation": "filter_unprocessed_news_items",
+                "total_items": len(news_items),
+                "unprocessed_items": len(unprocessed_items),
+                "filtered_out": filtered_count,
+                "efficiency_gain": f"{filtered_count} items skipped deduplication",
+            },
+            "labels": {"component": "news_service"},
+        },
+    )
+
+    return unprocessed_items
 
 
 async def save_news(
@@ -634,6 +860,11 @@ async def save_news(
         logger.info(
             f"Successfully inserted {len(insert_result.inserted_ids)} news items into verifications"
         )
+
+    # Cache external IDs in Redis with 24-hour expiration
+    external_ids = extract_distinct_external_ids(response)
+    await cache_external_ids_in_redis(external_ids)
+
     return insert_result.inserted_ids
 
 

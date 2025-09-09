@@ -5,11 +5,11 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from ment_api.common.custom_object_id import CustomObjectId
-from ment_api.models.image_with_dims import ImageWithDims
-from ment_api.models.feed import Feed
-from ment_api.models.user import User
-from ment_api.models.link_preview_data import LinkPreviewData
 from ment_api.models.fact_checking_models import FactCheckingResult
+from ment_api.models.feed import Feed
+from ment_api.models.image_with_dims import ImageWithDims
+from ment_api.models.link_preview_data import LinkPreviewData
+from ment_api.models.user import User
 
 
 class FactCheckStatus(str, Enum):
@@ -46,6 +46,7 @@ class SocialMediaScrapeStatus(str, Enum):
 
 
 class Source(BaseModel):
+    external_id: str
     title: str
     uri: str
     domain: Optional[str] = None
