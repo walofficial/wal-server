@@ -32,7 +32,7 @@ GCS_BUCKET_NAME = "ment-verification"
 # -----------------------------------------------------------
 
 # Maximum duration in seconds for video processing
-MAX_VIDEO_DURATION = 4000  # 15 minutes in seconds
+MAX_VIDEO_DURATION = 4000  # ~30 minutes in seconds
 
 # Maximum timeout for the entire video processing callback (10 minutes)
 CALLBACK_TIMEOUT = 600  # 10 minutes in seconds
@@ -195,8 +195,8 @@ async def process_video(
                 return False
 
     # Generate transcript using the audio GCS URI
+    logger.info(f"Generating transcript from audio: {audio_gcs_uri}")
     transcript_result = await generate_audio_transcript(audio_gcs_uri)
-
     if not transcript_result:
         logger.error("Failed to generate transcript")
         await mongo.verifications.update_one(
@@ -208,11 +208,11 @@ async def process_video(
     transcript = transcript_result["transcript"]
 
     # Generate the AI summary using the transcript
+    logger.info(f"Generating summary from transcript")
     ai_summary = await generate_summary_from_transcript(
         transcript=transcript,
         video_title=video_title,
-    )
-
+    )   
     # Update the verification document with the AI summary
     update_result = await mongo.verifications.update_one(
         {"_id": verification_id},
@@ -326,6 +326,7 @@ async def _process_video_callback_internal(message: ReceivedMessage) -> None:
 
     # Check if this video has already been processed
     youtube_info = await get_youtube_info_async(youtube_url)
+    logger.info(f"Youtube info: {youtube_info}")
     youtube_id = youtube_info["id"]
 
     existing_verification = await find_processed_youtube_id(youtube_id)
@@ -389,7 +390,7 @@ async def _process_video_callback_internal(message: ReceivedMessage) -> None:
         await send_notification(
             external_user_id,
             "ვიდეო ძალიან გრძელია",
-            "მხოლოდ 15 წუთამდე ვიდეოები შეიძლება დაამუშავოთ",
+            "ცადეთ მაქსიმუმ 1 საათიანი ვიდეოს გადამოწმება",
             data={
                 "type": "video_too_long",
                 "verificationId": str(verification_id),

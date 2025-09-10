@@ -19,7 +19,7 @@ async def initialize_mongo_client() -> None:
     if _client is None:
         _client = AsyncMongoClient(settings.mongodb_uri, tz_aware=True)
     if db is None:
-        db = _client[settings.mongodb_db_name]
+        db = _client["production"]
 
     await check_mongo_connection()
 
