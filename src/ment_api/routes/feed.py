@@ -229,8 +229,8 @@ async def get_location_feed_paginated(
     is_guest = request.state.is_guest
     try:
         external_user_id = request.state.supabase_user_id
-        blocked_set = redis.smembers(str(external_user_id))
-        blocked_user_ids = [ObjectId(id) for id in blocked_set]
+        # blocked_set = redis.smembers(str(external_user_id))
+        # blocked_user_ids = [ObjectId(id) for id in blocked_set]
         skip = (page - 1) * page_size
 
         pipeline = await get_mixed_feed_pipeline(
@@ -238,7 +238,7 @@ async def get_location_feed_paginated(
             skip,
             page_size,
             accept_language,
-            blocked_user_ids,
+            [],
             content_type_filter,
             search_term,
             is_guest,

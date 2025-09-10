@@ -618,7 +618,7 @@ async def check_registered_users(
 @router.post("/block/{target_id}")
 async def block(
     request: Request,
-    target_id: Annotated[CustomObjectId, Path()],
+    target_id: Annotated[str, Path()],
     redis: Redis = Depends(get_redis_dependency),
 ):
     external_user_id = request.state.supabase_user_id
@@ -632,13 +632,13 @@ async def block(
             UpdateOne(
                 {
                     "user_id": external_user_id,
-                    "friend_id": target_id,
+                    "friend_id": target_id_str,
                 },
                 {"$set": {"is_blocked": True}},
             ),
             UpdateOne(
                 {
-                    "user_id": target_id,
+                    "user_id": target_id_str,
                     "friend_id": external_user_id,
                 },
                 {"$set": {"is_blocked": True}},
@@ -649,8 +649,8 @@ async def block(
     await mongo.friend_requests.delete_all(
         {
             "$or": [
-                {"sender_id": external_user_id, "receiver_id": target_id},
-                {"sender_id": target_id, "receiver_id": external_user_id},
+                {"sender_id": external_user_id, "receiver_id": target_id_str},
+                {"sender_id": target_id_str, "receiver_id": external_user_id},
             ]
         }
     )
