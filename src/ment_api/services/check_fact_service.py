@@ -571,6 +571,7 @@ async def check_fact(
         )
         try:
             fact_check_data = await jina_check_fact(jina_request)
+            
             if fact_check_data:
                 logger.info(
                     "Jina fact check completed successfully",
@@ -651,6 +652,24 @@ async def check_fact(
                 )
             verification_span.update(
                 output={"status": "FAILED", "reason": "Jina fact check failed"}
+            )
+            return None
+        has_low_references = len(fact_check_data.references) < 3
+        if has_low_references:
+            await send_notification(
+                verification.get("assignee_user_id"),
+                "ფოსტი ვერ გადამოწმდა",
+                "გადასამოწმებლად საკმარისი ინფორმაცია არ მოიძებნა",
+                data={
+                    "type": "fact_check_completed",
+                    "verificationId": str(verification_id),
+                },
+            )
+            await mongo.verifications.delete_one(
+                    {"_id": verification_id},
+                )
+            verification_span.update(
+                output={"status": "FAILED", "reason": "fact checked but low sources"}
             )
             return None
         external_trace_id = "custom-" + str(uuid.uuid4())
