@@ -770,10 +770,9 @@ class GeminiClient:
         )
 
         # Create the system prompt
-        system_prompt = """You are a fact-checking assistant. Your task is to analyze the provided statement
-and images (if any) and create a comprehensive text description that captures all claims 
-that need to be fact-checked. Focus on extracting key factual claims and summarizing 
-any visual evidence from images in a way that can be verified by a text-only fact-checking system."""
+        system_prompt = """You are a fact-checking assistant. CRITICAL: Base your analysis exclusively on the provided data - 
+do not use your trained knowledge or external information. Your task is to analyze the provided statement
+and images to create a comprehensive text description that captures all claims needing fact-checking."""
 
         # Process images if they are included in the request - nested span for image processing
         image_objects = []
@@ -861,12 +860,12 @@ Also generate preview data (title and description) based on the content.
 {statement_text}
 
 Guidelines for enhanced statement:
-1. Extract all factual claims from the statement and images, if the images are appropriate.
+1. Extract factual claims from the provided statement and images, if the images are appropriate.
 2. For images, describe visible entities, text, contexts, and any implied claims, if image is valid screenshot.
-3. Include all relevant details that would need verification
+3. Include details that would need verification
 4. Format your response as a single cohesive text that a fact-checking system can verify
 5. Maintain the original meaning and intent of the content
-6. If it is a social media post, make sure to extract the most appropriate fact checkable and interesting statements based on the post, author text and images. Do not extract boring factual statements.
+6. If it is a social media post, extract fact-checkable statements based on the post, author text and images. Do not extract boring factual statements.
 
 Guidelines for preview data:
 1. Generate a concise, informative title that summarizes the main topic or claim, in Georgian language
