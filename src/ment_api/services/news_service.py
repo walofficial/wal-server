@@ -805,6 +805,12 @@ async def save_news(
         uploaded_images = await asyncio.gather(*upload_tasks)
     operations = []
     for idx, news_item in enumerate(response.news):
+        # Skip if any of the required summaries are empty
+        if not (news_item.neutral_summary and 
+                news_item.government_summary and 
+                news_item.opposition_summary):
+            continue
+
         image_gallery = []
         if uploaded_images[idx] is not None:
             image_gallery = [uploaded_images[idx]]
