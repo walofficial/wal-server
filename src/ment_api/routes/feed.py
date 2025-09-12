@@ -218,10 +218,9 @@ async def get_location_feed_paginated(
     feed_id: Annotated[CustomObjectId, Path()],
     accept_language: Annotated[str, Header()] = "ka",
     page: Annotated[int, Query(ge=1)] = 1,
-    page_size: Annotated[int, Query(ge=1, le=100)] = 10,
+    page_size: Annotated[int, Query(ge=1, le=3000)] = 10,
     content_type_filter: Annotated[ContentTypeFilter, Query()] = ContentTypeFilter.ALL,
     search_term: Optional[str] = None,
-    redis: Redis = Depends(get_redis_dependency),
 ):
     # Normalize language code
     accept_language = normalize_language_code(accept_language)

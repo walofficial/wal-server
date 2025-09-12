@@ -14,32 +14,6 @@ class GeminiBaseModel(BaseModel):
     )
 
 
-class FactCheckingReference(GeminiBaseModel):
-    source_title: str = Field(description="title of the reference source")
-    url: str = Field(description="Full URL of the reference source")
-    key_quote: str = Field(
-        description="Key quote from the source supporting the fact check"
-    )
-    is_supportive: bool = Field(
-        description="Whether the reference supports or refutes the statement"
-    )
-
-
-class FactCheckingResult(GeminiBaseModel):
-    factuality: float = Field(
-        description="Factuality score from 0-1, where 0 is completely false and 1 is completely true"
-    )
-    result: bool = Field(description="Overall result of the fact check: true or false")
-    reason: str = Field(
-        description="Detailed explanation of the fact check result with reasoning"
-    )
-    reason_summary: Optional[str] = Field(
-        description="1-2 sentence summary of the reasoning in Georgian language",
-    )
-    references: List[FactCheckingReference] = Field(
-        default_factory=list, description="List of references supporting the fact check"
-    )
-
 
 class FactCheckInputRequest(GeminiBaseModel):
     statement: str = Field(description="The statement to fact-check")

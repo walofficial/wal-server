@@ -11,7 +11,7 @@ class FactCheckingReference(BaseModel):
     """
 
     url: str = Field(description="URL of the reference source")
-    source_title: str = Field(default=None, description="Title of the reference source")
+    source_title: Optional[str] = Field(default="", description="Title of the reference source")
     key_quote: str = Field(
         description="Key quote from the source supporting the fact check",
     )
