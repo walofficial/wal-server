@@ -86,5 +86,5 @@ class NotificationGenerationResponse(BaseModel):
     )
     fact_check_summary: Optional[str] = Field(
         default=None,
-        description="Concise fact check summary (15-40 words) for social media display, explaining factuality in simple terms",
+        description="Concise fact check summary (15-40 words) for social media display, explaining factuality in simple terms, do not use the colons and things like მტკიცება მცდარია etc",
     )
