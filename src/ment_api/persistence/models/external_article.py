@@ -9,6 +9,7 @@ class NewsSource(StrEnum):
     IMEDI = "Imedi"
     PUBLIKA = "Publika"
     TV1 = "TV1"
+    MTAVARI = "Mtavari"
     INTERPRESS = "InterPressNews"
     NETGAZETI = "Netgazeti"
     CIVIL = "Civil"

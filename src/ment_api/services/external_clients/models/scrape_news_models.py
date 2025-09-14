@@ -10,6 +10,7 @@ class NewsSource(StrEnum):
     IMEDI = "Imedi"
     PUBLIKA = "Publika"
     TV1 = "TV1"
+    MTAVARI = "Mtavari"
     INTERPRESS = "InterPressNews"
     NETGAZETI = "Netgazeti"
     CIVIL = "Civil"
@@ -139,6 +140,91 @@ class RawInterPressNewsItemDetails(BaseModel):
 
 class RawInterPressNewsResponse(BaseModel):
     news_items: List[RawInterPressNewsItem] = Field(alias="results")
+
+
+# Mtavari TV Models
+
+
+class MtavariImageDerivatives(BaseModel):
+    news_thumb_lg: Optional[str] = None
+    news_thumb_md: Optional[str] = None
+    news_thumb_sm: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def extract_image_links(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        if "links" in data:
+            links = data["links"]
+            result = {}
+            result["news_thumb_lg"] = links.get("news_thumb_lg", {}).get("href", "")
+            result["news_thumb_md"] = links.get("news_thumb_md", {}).get("href", "")
+            result["news_thumb_sm"] = links.get("news_thumb_sm", {}).get("href", "")
+            return result
+        return data
+
+
+class MtavariNewsItemRelationships(BaseModel):
+    thumbnail_proxy_id: Optional[str] = Field(default=None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def extract_thumbnail_proxy(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        if "thumbnail_proxy" in data and "data" in data["thumbnail_proxy"]:
+            proxy_data = data["thumbnail_proxy"]["data"]
+            if isinstance(proxy_data, dict) and "id" in proxy_data:
+                data["thumbnail_proxy_id"] = proxy_data["id"]
+        return data
+
+
+class RawMtavariNewsItem(BaseModel):
+    id: str
+    title: str = Field(alias="attributes.title")
+    created: str = Field(alias="attributes.created")
+    slug: str = Field(alias="attributes.slug")
+    drupal_internal_nid: int = Field(alias="attributes.drupal_internal__nid")
+    self_link: str = Field(alias="links.self.href")
+    relationships: Optional[MtavariNewsItemRelationships] = Field(default=None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def flatten_nested_fields(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        # Flatten attributes
+        if "attributes" in data:
+            attrs = data["attributes"]
+            data["attributes.title"] = attrs.get("title", "")
+            data["attributes.created"] = attrs.get("created", "")
+            data["attributes.slug"] = attrs.get("slug", "")
+            data["attributes.drupal_internal__nid"] = attrs.get(
+                "drupal_internal__nid", 0
+            )
+
+        # Flatten links
+        if "links" in data and "self" in data["links"]:
+            data["links.self.href"] = data["links"]["self"]["href"]
+
+        return data
+
+
+class RawMtavariNewsItemDetails(BaseModel):
+    body: str = Field(alias="attributes.body")
+
+    @model_validator(mode="before")
+    @classmethod
+    def flatten_attributes(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        if "data" in data:
+            data = data["data"]
+
+        if "attributes" in data:
+            data["attributes.body"] = data["attributes"].get("body", "")
+
+        return data
+
+
+class RawMtavariNewsResponse(BaseModel):
+    news_items: List[RawMtavariNewsItem] = Field(alias="data")
+    included: Optional[List[Dict[str, Any]]] = Field(default=None)
+
+    # Image processing is handled in the client using the _extract_image_urls method
 
 
 # Generic RSS Models using Pydantic-XML

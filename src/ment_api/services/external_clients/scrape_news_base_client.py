@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from typing import Optional, Type, TypeVar
 
@@ -49,6 +50,21 @@ class ScrapeNewsBaseClient(ABC):
                 f"Failed to parse JSON response: {response.text[:100]} with exception {e}"
             )
         return None
+
+    def _clean_html_content(self, html_content: str) -> str:
+        """Remove HTML tags and clean up the content."""
+        # Remove HTML tags
+        clean_text = re.sub(r"<[^>]+>", "", html_content)
+        # Replace HTML entities
+        clean_text = (
+            clean_text.replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", '"')
+        )
+        # Clean up extra whitespace
+        clean_text = " ".join(clean_text.split())
+        return clean_text.strip()
 
     @abstractmethod
     async def scrape_news(self, news_quantity: int = 20) -> Optional[NewsResponse]:

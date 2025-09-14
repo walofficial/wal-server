@@ -1,5 +1,4 @@
 import logging
-import re
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
@@ -39,21 +38,6 @@ class ScrapeNewsCivilClient(ScrapeNewsBaseClient):
         super().__init__(client)
         self.use_scrape_do = use_scrape_do
         self.target_base_url = target_base_url
-
-    def _clean_html_content(self, html_content: str) -> str:
-        """Remove HTML tags and clean up the content."""
-        # Remove HTML tags
-        clean_text = re.sub(r"<[^>]+>", "", html_content)
-        # Replace HTML entities
-        clean_text = (
-            clean_text.replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", '"')
-        )
-        # Clean up extra whitespace
-        clean_text = " ".join(clean_text.split())
-        return clean_text.strip()
 
     def _parse_rss_date(self, date_str: str) -> datetime:
         """Parse RSS date format to datetime object."""

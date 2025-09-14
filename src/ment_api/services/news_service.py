@@ -49,6 +49,9 @@ from ment_api.services.external_clients.scrape_news_imedi_client import (
 from ment_api.services.external_clients.scrape_news_interpress_client import (
     get_scrape_interpress_news_client,
 )
+from ment_api.services.external_clients.scrape_news_mtavari_client import (
+    get_scrape_mtavari_news_client,
+)
 from ment_api.services.external_clients.scrape_news_netgazeti_client import (
     get_scrape_netgazeti_news_client,
 )
@@ -79,6 +82,7 @@ SOURCE_CLASSIFICATIONS = {
     "InterPressNews": NewsSourceType.NEUTRAL,
     "Netgazeti": NewsSourceType.NEUTRAL,
     "Civil": NewsSourceType.OPPOSITION,
+    "Mtavari": NewsSourceType.OPPOSITION,
 }
 
 
@@ -123,22 +127,24 @@ async def generate_news_from_site_apis(
 ) -> List[ObjectId]:
     """
     This function generates news from site APIs.
-    It scrapes news from the 1TV, Imedi, and Publika websites and saves them to the database.
+    It scrapes news from the 1TV, Imedi, Publika, Mtavari, and other websites and saves them to the database.
     """
     async with (
         get_scrape_1tv_news_client() as tv1_client,
         get_scrape_imedi_news_client() as imedi_client,
         get_scrape_publika_news_client() as publika_client,
+        get_scrape_mtavari_news_client() as mtavari_client,
         get_scrape_netgazeti_news_client() as netgazeti_client,
         get_scrape_interpress_news_client() as interpress_client,
         get_scrape_civil_news_client() as civil_client,
     ):
-        # Use asyncio to concurrently fetch news from all three sources
+        # Use asyncio to concurrently fetch news from all sources
         try:
             (
                 tv1_news,
                 imedi_news,
                 publika_news,
+                mtavari_news,
                 interpress_news,
                 netgazeti_news,
                 civil_news,
@@ -146,6 +152,7 @@ async def generate_news_from_site_apis(
                 tv1_client.scrape_news(),
                 imedi_client.scrape_news(),
                 publika_client.scrape_news(),
+                mtavari_client.scrape_news(),
                 interpress_client.scrape_news(),
                 netgazeti_client.scrape_news(),
                 civil_client.scrape_news(),
@@ -155,6 +162,7 @@ async def generate_news_from_site_apis(
                 tv1_news.news_items
                 + imedi_news.news_items
                 + publika_news.news_items
+                + mtavari_news.news_items
                 + interpress_news.news_items
                 + netgazeti_news.news_items
                 + civil_news.news_items
@@ -806,9 +814,11 @@ async def save_news(
     operations = []
     for idx, news_item in enumerate(response.news):
         # Skip if any of the required summaries are empty
-        if not (news_item.neutral_summary and 
-                news_item.government_summary and 
-                news_item.opposition_summary):
+        if not (
+            news_item.neutral_summary
+            and news_item.government_summary
+            and news_item.opposition_summary
+        ):
             continue
 
         image_gallery = []

@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     scrapable_imedi_news_endpiont: str
     scrapable_publika_news_endpiont: str
     scrapable_1tv_news_endpiont: str
+    scrapable_mtavari_news_endpoint: str
     scrapable_interpress_news_endpiont: str
     scrapable_netgazeti_news_endpoint: str
     scrapable_civil_news_endpoint: str
