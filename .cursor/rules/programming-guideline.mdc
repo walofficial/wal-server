@@ -151,3 +151,15 @@ You are an expert in Python, FastAPI, and scalable API development.
 - Use dependency injection for shared resources
 - Prefer async/await for all I/O operations
 - Cache frequently accessed data appropriately
+
+## Dependency management with `uv`
+
+- Use `uv` exclusively (no pip/poetry).
+- Commands: `uv add <pkg>`, `uv remove <pkg>`, `uv sync`, `uv run <cmd>`, `uv add <pkg> --script script.py`, `uv sync --script script.py`.
+
+```python
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["package"]
+# ///
+```
