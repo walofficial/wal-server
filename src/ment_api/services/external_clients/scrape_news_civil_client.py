@@ -174,15 +174,17 @@ class ScrapeNewsCivilClient(ScrapeNewsBaseClient):
                         )
                     )
 
+                    image_url = item.enclosure.url if item.enclosure else ""
+
                     news_items.append(
                         NewsItem(
                             external_id=str(external_id),
                             title=item.title,
                             content=content,
                             details_url=item.link,
-                            small_image_url="",  # RSS doesn't provide image URLs
-                            medium_image_url="",
-                            big_image_url="",
+                            small_image_url=image_url,
+                            medium_image_url=image_url,
+                            big_image_url=image_url,
                             created_at=self._parse_rss_date(item.pub_date),
                             category=NewsCategory.POLITICS,
                             source=NewsSource.CIVIL,

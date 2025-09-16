@@ -13,6 +13,7 @@ class NewsSource(StrEnum):
     INTERPRESS = "InterPressNews"
     NETGAZETI = "Netgazeti"
     CIVIL = "Civil"
+    RADIOTAVISUPLEBA = "RadioTavisupleba"
 
 
 class NewsCategory(StrEnum):

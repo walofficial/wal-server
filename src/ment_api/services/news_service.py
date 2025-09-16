@@ -55,6 +55,9 @@ from ment_api.services.external_clients.scrape_news_netgazeti_client import (
 from ment_api.services.external_clients.scrape_news_publika_client import (
     get_scrape_publika_news_client,
 )
+from ment_api.services.external_clients.scrape_news_radiotavisupleba_client import (
+    get_scrape_radiotavisupleba_news_client,
+)
 from ment_api.services.news_deduplication_service import deduplicate_news_items
 from ment_api.services.pub_sub_service import publish_message
 from ment_api.services.redis_service import get_async_redis_client
@@ -80,6 +83,7 @@ SOURCE_CLASSIFICATIONS = {
     "Netgazeti": NewsSourceType.NEUTRAL,
     "Civil": NewsSourceType.OPPOSITION,
     "Mtavari": NewsSourceType.OPPOSITION,
+    "RadioTavisupleba": NewsSourceType.NEUTRAL,
 }
 
 
@@ -124,7 +128,7 @@ async def generate_news_from_site_apis(
 ) -> List[ObjectId]:
     """
     This function generates news from site APIs.
-    It scrapes news from the 1TV, Imedi, Publika, Mtavari, and other websites and saves them to the database.
+    It scrapes news from the 1TV, Imedi, Publika, Mtavari, RadioTavisupleba, and other websites and saves them to the database.
     """
     async with (
         get_scrape_1tv_news_client() as tv1_client,
@@ -133,6 +137,7 @@ async def generate_news_from_site_apis(
         get_scrape_netgazeti_news_client() as netgazeti_client,
         get_scrape_interpress_news_client() as interpress_client,
         get_scrape_civil_news_client() as civil_client,
+        get_scrape_radiotavisupleba_news_client() as radiotavisupleba_client,
     ):
         # Use asyncio to concurrently fetch news from all sources
         try:
@@ -143,6 +148,7 @@ async def generate_news_from_site_apis(
                 interpress_news,
                 netgazeti_news,
                 civil_news,
+                radiotavisupleba_news,
             ) = await asyncio.gather(
                 tv1_client.scrape_news(),
                 imedi_client.scrape_news(),
@@ -150,6 +156,7 @@ async def generate_news_from_site_apis(
                 interpress_client.scrape_news(),
                 netgazeti_client.scrape_news(),
                 civil_client.scrape_news(),
+                radiotavisupleba_client.scrape_news(),
             )
 
             combined_news = (
@@ -159,6 +166,7 @@ async def generate_news_from_site_apis(
                 + interpress_news.news_items
                 + netgazeti_news.news_items
                 + civil_news.news_items
+                + radiotavisupleba_news.news_items
             )
 
             logger.info("combined news size: %s", len(combined_news))
