@@ -14,6 +14,7 @@ class NewsSource(StrEnum):
     INTERPRESS = "InterPressNews"
     NETGAZETI = "Netgazeti"
     CIVIL = "Civil"
+    RADIOTAVISUPLEBA = "RadioTavisupleba"
 
 
 class NewsCategory(StrEnum):
@@ -238,74 +239,43 @@ class AtomLink(BaseXmlModel, ns="atom"):
     type: str = attr()
 
 
-class RawGenericRSSItem(
-    BaseXmlModel,
-    nsmap={
-        "content": "http://purl.org/rss/1.0/modules/content/",
-        "wfw": "http://wellformedweb.org/CommentAPI/",
-        "dc": "http://purl.org/dc/elements/1.1/",
-        "atom": "http://www.w3.org/2005/Atom",
-        "sy": "http://purl.org/rss/1.0/modules/syndication/",
-        "slash": "http://purl.org/rss/1.0/modules/slash/",
-    },
-):
+class Enclosure(BaseXmlModel, tag="enclosure"):
+    url: Optional[str] = attr(default=None)
+    length: Optional[int] = attr(default=None)
+    type: Optional[str] = attr(default=None)
+
+
+class RawGenericRSSItem(BaseXmlModel, tag="item", search_mode="unordered"):
     title: str = element()
     link: str = element()
-    creator: Optional[str] = element(tag="creator", ns="dc", default="")
     pub_date: str = element(tag="pubDate")
     category: List[str] = element(tag="category", default_factory=list)
     guid: Optional[str] = element(default="")
     description: str = element()
+    enclosure: Optional[Enclosure] = element(default=None)
 
 
-class GenericRSSImage(BaseXmlModel):
+class GenericRSSImage(BaseXmlModel, tag="image"):
     url: str = element()
     title: str = element()
     link: str = element()
-    width: int = element()
-    height: int = element()
+    width: Optional[int] = element(default=None)
+    height: Optional[int] = element(default=None)
 
 
 # Updated Channel model with all missing fields
 class Channel(
     BaseXmlModel,
-    nsmap={
-        "content": "http://purl.org/rss/1.0/modules/content/",
-        "wfw": "http://wellformedweb.org/CommentAPI/",
-        "dc": "http://purl.org/dc/elements/1.1/",
-        "atom": "http://www.w3.org/2005/Atom",
-        "sy": "http://purl.org/rss/1.0/modules/syndication/",
-        "slash": "http://purl.org/rss/1.0/modules/slash/",
-    },
+    tag="channel",
+    search_mode="unordered",
 ):
     title: str = element()
-    # Add the missing atom:link element
-    atom_link: AtomLink = element(tag="link", ns="atom")
     link: str = element()
     description: str = element()
-    last_build_date: Optional[str] = element(tag="lastBuildDate", default="")
-    language: Optional[str] = element(default="")
-    # Add the missing syndication elements
-    update_period: Optional[str] = element(tag="updatePeriod", ns="sy", default=None)
-    update_frequency: Optional[int] = element(
-        tag="updateFrequency", ns="sy", default=None
-    )
-    # Add the missing generator element
-    generator: Optional[str] = element(default=None)
     image: Optional[GenericRSSImage] = element(default=None)
+    last_build_date: Optional[str] = element(tag="lastBuildDate", default="")
     items: List[RawGenericRSSItem] = element(tag="item", default_factory=list)
 
 
-class RawGenericRSSResponse(
-    BaseXmlModel,
-    tag="rss",
-    nsmap={
-        "content": "http://purl.org/rss/1.0/modules/content/",
-        "wfw": "http://wellformedweb.org/CommentAPI/",
-        "dc": "http://purl.org/dc/elements/1.1/",
-        "atom": "http://www.w3.org/2005/Atom",
-        "sy": "http://purl.org/rss/1.0/modules/syndication/",
-        "slash": "http://purl.org/rss/1.0/modules/slash/",
-    },
-):
+class RawGenericRSSResponse(BaseXmlModel, tag="rss"):
     channel: Channel = element()

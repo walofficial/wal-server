@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     scrapable_interpress_news_endpiont: str
     scrapable_netgazeti_news_endpoint: str
     scrapable_civil_news_endpoint: str
+    scrapable_radiotavisupleba_news_endpoint: str
     google_maps_api_key: str
     k_revision: str = "1.0.0"
     wal_url: str
