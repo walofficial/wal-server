@@ -34,6 +34,7 @@ class ContentTypeFilter(str, Enum):
     ALL = "last24h"
     YOUTUBE_ONLY = "youtube_only"
     SOCIAL_MEDIA_ONLY = "social_media_only"
+    WITH_IMAGE_AND_HIGH_SCORE = "with_image_and_high_score"
 
 
 async def get_mixed_feed_pipeline(
@@ -45,6 +46,7 @@ async def get_mixed_feed_pipeline(
     content_type_filter: ContentTypeFilter = ContentTypeFilter.ALL,
     search_term: Optional[str] = None,
     is_guest: bool = False,
+    sort_by: List[str] = ["last_modified_date"],
 ):
     """Pipeline for getting a mixed feed of news, YouTube summaries, and social media posts."""
     match_condition = {
@@ -82,6 +84,11 @@ async def get_mixed_feed_pipeline(
             {"metadata_status": {"$ne": "FAILED"}},
             {"social_media_scrape_status": {"$ne": "FAILED"}},
             {"fact_check_status": {"$ne": "FAILED"}},
+        ]
+    elif content_type_filter == ContentTypeFilter.WITH_IMAGE_AND_HIGH_SCORE:
+        match_condition["$and"] = [
+            {"fact_check_status": {"$ne": "FAILED"}},
+            {"image_gallery_with_dims": {"$not": {"$size": 0}}},
         ]
 
     if blocked_user_ids:
@@ -124,10 +131,12 @@ async def get_mixed_feed_pipeline(
             },  # Consider preserveNullAndEmptyArrays if user can be missing
         ]
 
+    sort_by_dict = {sort_by: -1 for sort_by in sort_by}
+
     pipeline = (
         search_pipeline
         + [
-            {"$sort": {"last_modified_date": -1}},  # Sort by most recent
+            {"$sort": sort_by_dict},  # Sort by most recent
             {"$skip": skip},
             {"$limit": page_size},
         ]
