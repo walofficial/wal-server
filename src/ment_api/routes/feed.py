@@ -16,6 +16,7 @@ from fastapi import (
 from redis import Redis
 
 from ment_api.common.custom_object_id import CustomObjectId
+from ment_api.common.utils import news_feeds_ids
 from ment_api.models.location_feed_post import FeedPost
 from ment_api.persistence import mongo
 from ment_api.persistence.mongo import create_translation_projection
@@ -253,7 +254,10 @@ async def get_location_feed_paginated(
         # blocked_user_ids = [ObjectId(id) for id in blocked_set]
         skip = (page - 1) * page_size
 
-        sort_by = ["score"]
+        sort_by = ["last_modified_date"]
+
+        if str(feed_id) in news_feeds_ids:
+            sort_by = ["score"]
 
         pipeline = await get_mixed_feed_pipeline(
             feed_id,
