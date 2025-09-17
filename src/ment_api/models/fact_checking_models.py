@@ -72,35 +72,46 @@ class JinaFactCheckResponse(BaseModel):
     """
 
     factuality: float = Field(
-        description="""EXTRACTION-ONLY FACTUALITY SCORE:
+        description="""FACTUALITY SCORE — GENERIC REPORT-ONLY INFERENCE:
 
-Extract the factuality score exactly as reported in the final report. If the
-final report does not provide an explicit numeric score, derive it ONLY from
-the report’s own explicit rubric, scale, labels, or conclusion statements.
-Do NOT use external knowledge or new reasoning. Do NOT verify or re-evaluate.
+Assume the report is the sole source of truth. Produce a score in [0, 1]
+purely from what the report states (no external knowledge).
 
-NORMALIZATION RULES (only if the report uses a different scale):
-• 0–100 or percentages → divide by 100 (e.g., 80% → 0.8, 80/100 → 0.8)
-• 0–10 → divide by 10 (e.g., 8/10 → 0.8)
-• If already 0.0–1.0 → keep as is
+STEPS:
+1) Extract factual signals (from the report only):
+   • Supporting signals: statements indicating correctness, confirmations,
+     corroborations, official acknowledgments
+   • Refuting signals: statements indicating incorrectness, contradictions,
+     official denials, disprovals
+   • Uncertain signals: statements indicating lack of data, conflicts, or
+     unverifiability
+2) Score each signal’s salience from 0.0–1.0 using ONLY textual cues present in
+   the report (e.g., “official statement” > “media report” > “opinion”). Use a
+   small discrete set: {1.0 (high), 0.6 (medium), 0.3 (low)}. Do not invent
+   criteria beyond what the report states.
+3) Aggregate:
+   S = sum(salience of supporting signals)
+   R = sum(salience of refuting signals)
+   U = sum(salience of uncertain signals)
+4) Base score:
+   raw = (S - R) / max(1e-6, S + R + U)
+   s = 0.5 + 0.5 * raw
+5) Uncertainty dampening:
+   u = U / max(1e-6, S + R + U)
+   s = 0.5 + (s - 0.5) * (1 - min(0.7, u))
+6) Conclusion anchoring (only if explicitly present in the report):
+   • Clear final affirmation → s = max(s, 0.75)
+   • Clear final refutation → s = min(s, 0.25)
+   • Explicit “unverifiable/insufficient” → s = 0.50
 
-FORMATTING:
-• Clip to [0.0, 1.0]
-• Round to 2 decimal places
-• If multiple scores appear, choose the one explicitly labeled “final”, “overall”,
-  or appearing in the summary/conclusion section
+OUTPUT:
+• Clip to [0.0, 1.0]; round to 2 decimals
+• Do not resolve contradictions; let S/R/U reflect them
+• Use only the report; no new evidence or knowledge
 
-DERIVATION GUIDELINES (when no numeric score is present):
-• If the report maps labels (e.g., True/Mostly True/Partially True/False) to a
-  numeric scale, use that mapping exactly as stated
-• If the report provides a rubric (e.g., weightings, thresholds), apply it as
-  written to compute a score using only report-provided inputs
-• If only qualitative descriptors are given, use the report’s own descriptor-to-
-  number guidance; if none is provided, return 0.0 for clearly false, 1.0 for
-  clearly true, or 0.5 when the report states it is mixed/uncertain—only if such
-  language is explicitly present in the report
-• Document the derivation in `score_justification` by quoting the exact parts of
-  the report that guided the mapping"""
+TRACEABILITY:
+• In `score_justification`, quote the key lines for top signals, list their
+  salience and polarity, and report (S, R, U) and final s"""
     )
 
     reason: str = Field(
@@ -112,15 +123,18 @@ wording as much as possible.
 
 MARKDOWN STRUCTURE:
 • Use H2 headings exactly as: "## სიმართლე", "## ტყუილი", "## გადაუმოწმებელი"
-• Include only sections that have content in the report; omit empty sections
+• Include only sections that have bullet content; omit sections with zero bullets
 • Under each included heading:
-  - Bulleted list of claims (one claim per bullet)
+  - Bulleted list of claims (one claim per bullet; maximum 4 bullets)
   - After the bullets, one evidence paragraph (plain text) that stays within
     the report’s wording
 
 BULLETS:
 • Start each bullet with "- " (hyphen + space); do not use numbers or checkboxes
-• Keep each bullet to one concise claim; no nested lists
+• Keep each bullet to one concise claim; no nested lists; maximum 4 bullets
+• If more than 4 candidate bullets exist in the report, select the 4 most
+  important strictly based on cues in the report (e.g., explicitness, source
+  authority as stated, centrality to the conclusion); preserve wording
 • Use Georgian wording from the report (verbatim or minimally trimmed)
 
 EVIDENCE PARAGRAPH:
@@ -148,37 +162,39 @@ DERIVATION WHEN NOT EXPLICIT:
     )
 
     score_justification: str = Field(
-        description="""ENGLISH JUSTIFICATION – EXTRACTION/DERIVATION FROM REPORT ONLY:
+        description="""ENGLISH JUSTIFICATION — REPORT-ONLY:
 
-Extract the report’s existing justification/methodology/explanation for the
-score. Do NOT generate new reasoning or re-evaluate evidence.
-
-GUIDELINES:
-• Prefer verbatim extraction of the justification section
-• If no dedicated section exists, extract the sentences that explicitly explain
-  how the score was determined (quoted as-is)
-• Keep original ordering and terminology from the report
-
-DERIVATION WHEN NOT EXPLICIT:
-• If rationale is distributed across the report, compile only the sentences that
-  state the rubric, weights, thresholds, or conclusion logic (verbatim)
-• Quote phrases and cite section names when available; avoid paraphrasing unless
-  trimming for brevity without changing meaning
-• Do NOT add analysis beyond what the report explicitly states"""
+Summarize, using only the report, how the score was derived. Cite key
+supporting/refuting/uncertain signals and the report’s own rationale. Include
+S, R, U totals and the final s. Quote brief phrases or reference sections for
+traceability. Do not add new reasoning or external knowledge."""
     )
 
     reason_summary: str = Field(
-        description="""GEORGIAN SUMMARY – EXTRACTION/DERIVATION FROM REPORT ONLY:
+        description="""GEORGIAN SUMMARY – FIXED, ULTRA-BRIEF, REPORT-ONLY:
 
-Extract the report’s user-facing Georgian summary. Do NOT add new content or
-rephrase beyond minimal trimming.
+Purpose: One familiar, scannable mini-summary derived only from `reason`.
+Audience: Short attention span; immediate comprehension.
 
-GUIDELINES:
-• If a summary exists, copy it verbatim
-• If absent, produce a 2–3 sentence compression using only explicit conclusions
-  stated in the report (no new claims)
-• Prefer quoting key phrases; do not change their meaning
-• Keep raw markdown if present in the source"""
+STRUCTURE (up to 3 sentences; include a sentence only if the category has
+bullets in `reason`):
+1) False (only if `reason` has false bullets):
+   "ტყუილია: <the single most impactful false claim in 10–14 words>."
+2) True (only if `reason` has true bullets):
+   "სწორია: <the single most impactful true claim in 10–14 words>."
+3) Unverifiable (only if `reason` has unverifiable bullets):
+   "გადაუმოწმებელია: <the single most impactful unclear point in 8–12 words>."
+
+RULES:
+• Extraction-only from `reason`; no new claims or reworded interpretations
+• Keep each sentence standalone; do not chain with conjunctions
+• Omit a category entirely if `reason` has zero bullets for it
+• Per category, include exactly one snippet: the most impactful claim/point
+• Impact criteria (from report cues only): explicit official statements >
+  multi-source corroborations > central assertions > peripheral notes
+• Max total 3 sentences; avoid punctuation clutter; keep simple Georgian
+• Use actual newline characters (\n) only if rendering as list; otherwise a single paragraph
+• Prefer exact phrases from `reason` (minimally trimmed) for claim snippets"""
     )
 
     references: List[FactCheckingReference] = Field(
