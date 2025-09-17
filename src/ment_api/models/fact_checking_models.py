@@ -11,7 +11,9 @@ class FactCheckingReference(BaseModel):
     """
 
     url: str = Field(description="URL of the reference source")
-    source_title: Optional[str] = Field(default="", description="Title of the reference source")
+    source_title: Optional[str] = Field(
+        default="", description="Title of the reference source"
+    )
     key_quote: str = Field(
         description="Key quote from the source supporting the fact check",
     )
@@ -60,129 +62,143 @@ class FactCheckingResult(BaseModel):
 
 
 class JinaFactCheckResponse(BaseModel):
+    """
+    Extraction-only mapping from a finalized fact-check report.
+
+    This model is used to parse a pre-generated, finalized report.
+    Do NOT perform verification, re-scoring, reasoning, or external research.
+    Only extract and, when truly necessary, derive strictly from the report’s
+    own content, rubrics, and labels.
+    """
+
     factuality: float = Field(
-        description="""FACTUALITY SCORE REQUIREMENTS:
-        
-Output a precise numerical score between 0.0 and 1.0 representing the factuality of the post details. This score will be displayed to users as a factuality indicator.
+        description="""EXTRACTION-ONLY FACTUALITY SCORE:
 
-SCORING SCALE:
-• 0.9-1.0: Highly factual - well-supported by multiple reliable sources
-• 0.7-0.9: Mostly factual - minor uncertainties present  
-• 0.4-0.7: Partially factual - significant uncertainties present
-• 0.0-0.4: Mostly false or unverifiable claims
+Extract the factuality score exactly as reported in the final report. If the
+final report does not provide an explicit numeric score, derive it ONLY from
+the report’s own explicit rubric, scale, labels, or conclusion statements.
+Do NOT use external knowledge or new reasoning. Do NOT verify or re-evaluate.
 
-SCORING METHODOLOGY:
-1. Weight evidence based on source authority and verification
-2. Evaluate source credibility and reliability systematically
-3. Assess strength of evidence for each claim
-4. Consider multiple perspectives and contrasting viewpoints
-5. Cross-reference claims across reliable sources"""
+NORMALIZATION RULES (only if the report uses a different scale):
+• 0–100 or percentages → divide by 100 (e.g., 80% → 0.8, 80/100 → 0.8)
+• 0–10 → divide by 10 (e.g., 8/10 → 0.8)
+• If already 0.0–1.0 → keep as is
+
+FORMATTING:
+• Clip to [0.0, 1.0]
+• Round to 2 decimal places
+• If multiple scores appear, choose the one explicitly labeled “final”, “overall”,
+  or appearing in the summary/conclusion section
+
+DERIVATION GUIDELINES (when no numeric score is present):
+• If the report maps labels (e.g., True/Mostly True/Partially True/False) to a
+  numeric scale, use that mapping exactly as stated
+• If the report provides a rubric (e.g., weightings, thresholds), apply it as
+  written to compute a score using only report-provided inputs
+• If only qualitative descriptors are given, use the report’s own descriptor-to-
+  number guidance; if none is provided, return 0.0 for clearly false, 1.0 for
+  clearly true, or 0.5 when the report states it is mixed/uncertain—only if such
+  language is explicitly present in the report
+• Document the derivation in `score_justification` by quoting the exact parts of
+  the report that guided the mapping"""
     )
 
     reason: str = Field(
-        description="""GEORGIAN STRUCTURED ANALYSIS - CRITICAL FORMATTING REQUIREMENTS:
+        description="""GEORGIAN ANALYSIS – EXTRACTION/DERIVATION FROM REPORT ONLY:
 
-Your response MUST contain actual line break characters (newlines) between each element. Format as a multi-line string with proper line breaks, NOT as a single continuous line.
+Extract the Georgian structured analysis from the final report. Do NOT verify
+claims or add new evidence. Preserve the report’s original structure and
+wording as much as possible.
 
-MANDATORY STRUCTURE - Include ONLY sections with actual bullet points:
+MARKDOWN STRUCTURE:
+• Use H2 headings exactly as: "## სიმართლე", "## ტყუილი", "## გადაუმოწმებელი"
+• Include only sections that have content in the report; omit empty sections
+• Under each included heading:
+  - Bulleted list of claims (one claim per bullet)
+  - After the bullets, one evidence paragraph (plain text) that stays within
+    the report’s wording
 
-## სიმართლე
-- [bullet point for verified true claim]
-- [bullet point for verified true claim]
+BULLETS:
+• Start each bullet with "- " (hyphen + space); do not use numbers or checkboxes
+• Keep each bullet to one concise claim; no nested lists
+• Use Georgian wording from the report (verbatim or minimally trimmed)
 
-[Evidence paragraph: Lead with strongest supporting evidence, then provide 2-3 additional concrete details with specific dates, numbers, official statements. Include natural source references. Expand with NEW information beyond bullet points. Show how multiple sources corroborate.]
+EVIDENCE PARAGRAPH:
+• Write as a single paragraph per section using the report’s own sentences
+• May include inline links that exist in the report: [label](url)
+• For quotes present in the report, you may use "> " lines or embed in the
+  paragraph with quotation marks
 
-## ტყუილი  
-- [bullet point for verified false claim]
-- [bullet point for verified false claim]
+    FORMATTING RULES:
+    • Newlines: use actual newline characters (\\n)
+      - After each H2 heading: add a blank line (\\n\\n)
+      - Between the last bullet and the evidence paragraph: add a blank line (\\n\\n)
+      - Between sections: add a blank line (\\n\\n)
+      - Each bullet is on its own line and ends with \\n
+• No code blocks, tables, images, emojis, or autogenerated labels
+• Inline emphasis (e.g., **bold**) only if present in the report; do not invent
+• Language must remain Georgian; keep original names/dates as written
+• Do NOT create new claims or reinterpretation; extract only from the report
 
-[Evidence paragraph: Begin with most definitive contradicting evidence, then provide specific facts that disprove claims. Include precise contradictory data, official denials, timeline discrepancies. Focus on new contradictory evidence. Show how authoritative sources consistently refute these claims.]
-
-## გადაუმოწმებელი
-- [bullet point for unverifiable claim]
-
-[Evidence paragraph: Explain specific reasons verification is impossible - lack of official records, conflicting reports, insufficient documentation. Provide concrete examples of missing information. Reference consulted sources. Focus on factual gaps and source limitations.]
-
-CRITICAL FORMATTING RULES:
-• Use actual newline characters (\\n) in response
-• Each bullet point on separate line starting with "- "
-• Add blank lines between bullet points and evidence paragraphs
-• Add blank lines between sections
-• Use "---" separator only between sections (not after last section)
-• Keep bullet points concise and specific
-• Write evidence paragraphs in clear Georgian for average readers
-• DO NOT include empty sections without bullet points
-
-VERIFICATION CHECKLIST:
-□ Actual line breaks between bullet points
-□ Actual line breaks between sections  
-□ Multi-line string format (not single line)
-□ Only sections with actual content
-□ Proper spacing with blank lines"""
+DERIVATION WHEN NOT EXPLICIT:
+• If findings are scattered, compile them under the three headings using verbatim
+  sentences or minimal trims only
+• Rely solely on statements present in the report; do NOT add reasoning
+• If a section has no explicit content in the report, omit that section"""
     )
 
     score_justification: str = Field(
-        description="""COMPREHENSIVE ENGLISH ANALYTICAL JUSTIFICATION:
+        description="""ENGLISH JUSTIFICATION – EXTRACTION/DERIVATION FROM REPORT ONLY:
 
-Provide extremely detailed analysis explaining the factuality score reasoning. This should be more thorough than the Georgian reason field.
+Extract the report’s existing justification/methodology/explanation for the
+score. Do NOT generate new reasoning or re-evaluate evidence.
 
-REQUIRED CONTENT:
-1. METHODOLOGY: Explain the evaluation approach used
-2. EVIDENCE WEIGHTING: Detail how different types of evidence were assessed and weighted
-3. SOURCE CREDIBILITY: Analyze reliability and authority of sources consulted  
-4. LOGICAL REASONING: Step-by-step reasoning process behind conclusions
-5. SCORE JUSTIFICATION: Complete explanation for the specific numerical score assigned
+GUIDELINES:
+• Prefer verbatim extraction of the justification section
+• If no dedicated section exists, extract the sentences that explicitly explain
+  how the score was determined (quoted as-is)
+• Keep original ordering and terminology from the report
 
-QUALITY STANDARDS:
-• Be extremely detailed and analytical
-• Value strong arguments over source authority alone
-• Consider new technologies and contrarian perspectives
-• Use high levels of analysis appropriate for experienced analysts
-• Accuracy is critical - mistakes erode trust
-• Be highly organized in response structure
-• Include specific evidence assessment and cross-referencing methodology"""
+DERIVATION WHEN NOT EXPLICIT:
+• If rationale is distributed across the report, compile only the sentences that
+  state the rubric, weights, thresholds, or conclusion logic (verbatim)
+• Quote phrases and cite section names when available; avoid paraphrasing unless
+  trimming for brevity without changing meaning
+• Do NOT add analysis beyond what the report explicitly states"""
     )
 
     reason_summary: str = Field(
-        description="""GEORGIAN USER SUMMARY - OPTIMIZED FOR SHORT ATTENTION SPANS:
+        description="""GEORGIAN SUMMARY – EXTRACTION/DERIVATION FROM REPORT ONLY:
 
-Concise fact-check summary in Georgian, formatted as raw markdown (no code blocks). Must be optimized for users who scan quickly.
+Extract the report’s user-facing Georgian summary. Do NOT add new content or
+rephrase beyond minimal trimming.
 
-REQUIREMENTS:
-• Maximum 2-3 short sentences total (NOT paragraphs)
-• Lead with most important finding first
-• Use simple, direct language for 3-second comprehension  
-• Write for immediate understanding
-
-PRIORITY STRUCTURE (use in order of impact):
-1. FALSE INFORMATION (if present): Start with "მტკიცება მცდარია:" or "ინფორმაცია არასწორია:" + brief reason (max 15 words)
-2. VERIFIED TRUE INFORMATION (if present): Use "თუმცა, სწორია, რომ..." after false claim, or lead with "ინფორმაცია სწორია:" if main point (max 15 words)  
-3. UNVERIFIABLE CLAIMS (if significant): End with "ვერ გადამოწმდა..." or "გადაუმოწმებელია..." + specific claim (max 10 words)
-
-WRITING STYLE:
-• Skip categories with no significant findings
-• Use active voice and specific terms
-• Avoid technical jargon or complex sentences
-• No academic language - write for average readers
-• Each sentence should add new value"""
+GUIDELINES:
+• If a summary exists, copy it verbatim
+• If absent, produce a 2–3 sentence compression using only explicit conclusions
+  stated in the report (no new claims)
+• Prefer quoting key phrases; do not change their meaning
+• Keep raw markdown if present in the source"""
     )
 
     references: List[FactCheckingReference] = Field(
-        description="""REFERENCE REQUIREMENTS:
-References found in the markdown reference
+        description="""REFERENCES – EXTRACTION/DERIVATION FROM REPORT ONLY:
 
-EACH REFERENCE MUST INCLUDE:
-• url: Direct URL to the source
-• source_title: Full title of the reference source  
-• key_quote: Exact quote from source in original language that supports the analysis
-• is_supportive: Boolean indicating whether reference supports or contradicts the post details
+Extract references exactly as listed in the final report. Do NOT introduce new
+sources. Populate fields from the report only.
 
-QUALITY STANDARDS:
-• Include URLs to authoritative sources
-• Provide key quotes that directly relate to claims being verified
-• Clear indication of support vs contradiction for each source
-• Prioritize official sources, established media, and verified documentation
-• Cross-reference multiple sources when possible""",
+EACH REFERENCE SHOULD INCLUDE:
+• url: The cited URL from the report (leave empty if truly not provided)
+• source_title: Title as written in the report (leave empty if not provided)
+• key_quote: A direct quote associated with that source, copied from the report
+• is_supportive: Use the report’s own stance/labeling (supporting/contradicting)
+
+DERIVATION WHEN NOT EXPLICITLY LISTED:
+• If the report has inline citations/URLs but no reference list, extract those
+• Determine is_supportive only from explicit context in the report (e.g., placed
+  in a “supporting evidence” vs “contradicting evidence” section); do NOT infer
+  beyond the report’s own wording
+• Do NOT add sources that are not present in the report""",
     )
 
 
