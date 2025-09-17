@@ -16,6 +16,7 @@ from fastapi import (
 from redis import Redis
 
 from ment_api.common.custom_object_id import CustomObjectId
+from ment_api.common.utils import news_feeds_ids
 from ment_api.models.location_feed_post import FeedPost
 from ment_api.persistence import mongo
 from ment_api.persistence.mongo import create_translation_projection
@@ -88,7 +89,8 @@ async def get_mixed_feed_pipeline(
     elif content_type_filter == ContentTypeFilter.WITH_IMAGE_AND_HIGH_SCORE:
         match_condition["$and"] = [
             {"fact_check_status": {"$ne": "FAILED"}},
-            {"image_gallery_with_dims": {"$not": {"$size": 0}}},
+            {"image_gallery_with_dims":  {"$size": 1}},
+            {"is_generated_news": True},
         ]
 
     if blocked_user_ids:
@@ -132,15 +134,26 @@ async def get_mixed_feed_pipeline(
         ]
 
     sort_by_dict = {sort_by: -1 for sort_by in sort_by}
+    reduce_limit_pipeline = []
+
+    if content_type_filter == ContentTypeFilter.WITH_IMAGE_AND_HIGH_SCORE:
+        # For main hero section of landing page we can only retrieve max 2 items for now.
+        reduce_limit_pipeline = [
+            {"$limit": 2},
+        ]
 
     pipeline = (
         search_pipeline
         + [
-            {"$sort": sort_by_dict},  # Sort by most recent
+            {"$sort": {"last_modified_date": -1}},
             {"$skip": skip},
-            {"$limit": page_size},
+            # For landing page get latest 50 items for now and filter it with later pipeline to not affect existing logic for other feeds
+            # TODO: add seperate endpoint for landing page data
+            {"$limit": content_type_filter == ContentTypeFilter.WITH_IMAGE_AND_HIGH_SCORE and 50 or page_size},
+            {"$sort": sort_by_dict},
         ]
         + user_pipeline
+        + reduce_limit_pipeline
     )
 
     # Create translation projections for multilingual fields
@@ -241,6 +254,8 @@ async def get_location_feed_paginated(
         # blocked_user_ids = [ObjectId(id) for id in blocked_set]
         skip = (page - 1) * page_size
 
+        sort_by = ["score"]
+
         pipeline = await get_mixed_feed_pipeline(
             feed_id,
             skip,
@@ -250,6 +265,7 @@ async def get_location_feed_paginated(
             content_type_filter,
             search_term,
             is_guest,
+            sort_by
         )
         verifications = await mongo.verifications.aggregate(pipeline)
         feed_posts = [FeedPost(**verification) for verification in verifications]
