@@ -16,7 +16,6 @@ from fastapi import (
 from redis import Redis
 
 from ment_api.common.custom_object_id import CustomObjectId
-from ment_api.common.utils import news_feeds_ids
 from ment_api.models.location_feed_post import FeedPost
 from ment_api.persistence import mongo
 from ment_api.persistence.mongo import create_translation_projection
