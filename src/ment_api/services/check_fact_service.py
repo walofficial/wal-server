@@ -538,13 +538,13 @@ async def check_fact(
 
         # is_youtube_video = verification.get("youtube_id") is not None
 
-        budget_tokens = 400000 * 2
+        budget_tokens = 20000 * 2
         if settings.env == "dev":
             budget_tokens = 30000
 
         sources_length = len(verification.get("sources", []))
         if sources_length == 1:
-            budget_tokens = 400000 * 2
+            budget_tokens = 20000 * 2
 
         # Step 3: Use Jina to perform the fact check with the enhanced statement
         # This creates its own spans within the jina fact checking service
