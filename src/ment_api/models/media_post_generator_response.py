@@ -5,9 +5,9 @@ from pydantic import BaseModel, Field
 
 class MediaGeneratedPost(BaseModel):
     external_id: str = Field(description="External article id of the selected post")
-    title: str = Field(description="Title for the fact-checkable media post (Georgian)")
+    title: str = Field(description="Title (Georgian)")
     content: str = Field(
-        description="Content for the post (Georgian), concise but with claims suitable for fact-check"
+        description="Content for the post (Georgian)"
     )
     big_image_url: Optional[str] = Field(
         default=None, description="Big image URL to use for the post if available"

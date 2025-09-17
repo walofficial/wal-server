@@ -8,4 +8,5 @@ def bot_name_to_id():
         NewsSource.TV1.value: "483c14a4-d93f-4810-9e30-128394969e4e",
         NewsSource.INTERPRESS.value: "743939e1-5f8b-4b8c-ad20-f42e589c2bd9",
         NewsSource.CIVIL.value: "ad9804f5-d37c-4a88-8de7-97e45ee434c9",
+        NewsSource.RADIOTAVISUPLEBA.value: "30c947ca-045a-4d39-a953-9c105284652e",
     }
