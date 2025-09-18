@@ -9,3 +9,5 @@ def get_file_name_and_extension(file: UploadFile) -> Tuple[str, str]:
     file_extension = path.suffix
     file_name = path.stem
     return file_name, file_extension
+
+news_feeds_ids = ["687960db5051460a7afd6e63"]
