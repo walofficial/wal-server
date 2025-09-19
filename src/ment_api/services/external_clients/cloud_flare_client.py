@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 async def upload_image(
-    file: bytes, destination_file_name: str, content_type: str
+    file: bytes, destination_file_name: str, content_type: str, limit_aspect_ratio: bool = False
 ) -> ImageWithDims:
     """
     Async function to upload image to cloud storage using the google_storage_service.
@@ -31,7 +31,8 @@ async def upload_image(
         try:
             # Use the new async function from google_storage_service
             result = await upload_image_verification(
-                file, destination_file_name, content_type
+                file, destination_file_name, content_type,
+                limit_aspect_ratio,
             )
 
             upload_span.update(

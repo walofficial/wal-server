@@ -1,12 +1,49 @@
 import io
 import logging
-from typing import BinaryIO
+from typing import BinaryIO, Tuple
 
 from gcloud.aio.storage import Storage
 from PIL import Image
 
 from ment_api.configurations.config import settings
 from ment_api.models.image_with_dims import ImageWithDims
+
+
+def calculate_instagram_aspect_ratio(width: int, height: int) -> Tuple[int, int]:
+    """
+    Calculate Instagram-style aspect ratio clamping.
+    
+    Instagram rules:
+    - Minimum aspect ratio: 1.91:1 (landscape)  
+    - Maximum aspect ratio: 4:5 (portrait, 0.8:1)
+    
+    Args:
+        width: Original image width
+        height: Original image height
+        
+    Returns:
+        Tuple of (clamped_width, clamped_height) for aspect ratio calculation
+    """
+    original_aspect_ratio = width / height
+    
+    # Instagram limits
+    min_aspect_ratio = 1.91  # Landscape limit (1.91:1)
+    max_aspect_ratio = 0.8   # Portrait limit (4:5 or 0.8:1)
+    
+    # If image is too wide (landscape), clamp to 1.91:1
+    if original_aspect_ratio > min_aspect_ratio:
+        # Keep width, reduce height
+        clamped_height = int(width / min_aspect_ratio)
+        return width, clamped_height
+    
+    # If image is too tall (portrait), clamp to 4:5 (0.8:1) 
+    elif original_aspect_ratio < max_aspect_ratio:
+        # Keep width, reduce height to max allowed
+        clamped_height = int(width / max_aspect_ratio)
+        return width, clamped_height
+    
+    # Image is within Instagram's aspect ratio limits
+    return width, height
 
 
 async def upload_video_verification(
@@ -71,7 +108,7 @@ async def upload_video_verification(
 
 
 async def upload_image_verification(
-    file: bytes, destination_file_name: str, content_type: str
+    file: bytes, destination_file_name: str, content_type: str, limit_aspect_ratio: bool = False
 ) -> ImageWithDims:
     """
     Upload image to Google Cloud Storage and extract dimensions.
@@ -106,6 +143,13 @@ async def upload_image_verification(
         img = Image.open(image_stream)
         width, height = img.size
 
+        # Apply Instagram-style aspect ratio clamping if enabled
+        if limit_aspect_ratio:
+            clamped_width, clamped_height = calculate_instagram_aspect_ratio(width, height)
+            aspect_ratio_dict = {"width": clamped_width, "height": clamped_height}
+        else:
+            aspect_ratio_dict = {"width": width, "height": height}
+
         # Upload to storage
         async with Storage() as client:
             await client.upload(
@@ -121,7 +165,7 @@ async def upload_image_verification(
                 url=public_url,
                 width=width,
                 height=height,
-                aspectRatio={"width": width, "height": height},
+                aspectRatio=aspect_ratio_dict,
             )
 
             logging.info(

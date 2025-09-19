@@ -57,8 +57,8 @@ async def upload_photo_to_location(
         file=file_bytes,
         destination_file_name=dest_file_full_name,
         content_type=photo_file.content_type,
+        limit_aspect_ratio=True,
     )
-
     insert_doc = {
         "feed_id": feed_id,
         "assignee_user_id": external_user_id,
