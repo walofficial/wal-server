@@ -6,9 +6,8 @@ from typing import Optional
 class ChatMessage(BaseModel):
     id: CustomObjectId = Field(alias="_id", serialization_alias="id")
     author_id: str
-    room_id: str
+    room_id: CustomObjectId
     recipient_id: str
-    message: Optional[str] = ""
     encrypted_content: Optional[str]
     nonce: Optional[str]
     message_state: str

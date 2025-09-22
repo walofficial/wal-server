@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import DefaultDict, Dict, List, Optional, Set
 
 import socketio
+from ment_api.common.custom_object_id import CustomObjectId
 from bson import ObjectId
 from exponent_server_sdk import PushClient
 from fastapi import APIRouter, Body, HTTPException, Request
@@ -201,12 +202,12 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
             encrypted_content, 
             nonce
         )
-    print(sender, recipient, room_id, encrypted_content, nonce)
+
     await mongo.chat_messages.insert_one(
         {
             "author_id": sender,
             "recipient_id": recipient,
-            "room_id": room_id,
+            "room_id": ObjectId(room_id),
             "encrypted_content": encrypted_content,
             "nonce": nonce,
             "message_state": MessageState.SENT,
@@ -273,7 +274,7 @@ class GetMessagesResponse(BaseModel):
 )
 async def get_messages(
     request: Request,
-    room_id: str = Query(),
+    room_id: CustomObjectId = Query(),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1),
 ):
@@ -301,7 +302,7 @@ async def get_messages(
 
     chat_messages = await mongo.chat_messages.aggregate(pipeline)
     messages_list = [ChatMessage(**message) for message in chat_messages]
-
+    messages_list.reverse()
     # Calculate previous and next cursors
     previous_cursor = page - 1 if isinstance(page, int) and page > 1 else None
     next_cursor = (
@@ -353,11 +354,10 @@ async def get_user_chat_rooms(request: Request):
             datetime(1970, 1, 1, tzinfo=timezone.utc)
         pipeline = [
             {"$match": {"participants": external_user_id}},
-            {"$addFields": {"room_id_str": {"$toString": "$_id"}}},
             {
                 "$lookup": {
                     "from": "chat_messages",
-                    "let": {"room_id": "$room_id_str"},
+                    "let": {"room_id": "$_id"},
                     "pipeline": [
                         {
                             "$match": {
@@ -423,13 +423,10 @@ async def get_user_chat_rooms(request: Request):
                 (p for p in participants if p["external_user_id"] != external_user_id),
                 None,
             )
-            print(public_key_map)
             target_user_id = target_user["external_user_id"] if target_user else None
             target_public_key = (
                 public_key_map.get(target_user_id) if target_user_id else None
             )
-
-            print(target_public_key)
 
             room_obj = ChatRoom(
                 id=str(room["_id"]),
