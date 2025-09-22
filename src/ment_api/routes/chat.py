@@ -182,6 +182,7 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
                     "sender_profile_picture": user_info_by_connection[sender]["user_profile_picture"],
                     "encrypted_content": encrypted_content,
                     "nonce": nonce,
+                    "room_id": room_id,
                     "temporary_id": temporary_id,
                 },
                 to=recipient_sid,
