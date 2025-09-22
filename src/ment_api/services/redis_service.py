@@ -58,16 +58,8 @@ class RedisService:
     def __init__(self):
         logger.info("Creating Redis connection pools (sync and async)")
 
-        # Sync Redis connection pool
-        self.sync_pool = ConnectionPool(
-            host=settings.redis_host,
-            port=settings.redis_port,
-            password=settings.redis_password,
-            decode_responses=True,
-            max_connections=10,
-        )
-
         # Async Redis connection pool
+        print(settings.redis_host, settings.redis_port, settings.redis_password)
         self.async_pool = aioredis.ConnectionPool(
             host=settings.redis_host,
             port=settings.redis_port,
@@ -77,14 +69,8 @@ class RedisService:
         )
 
         # Create reusable clients
-        self._sync_client = Redis(connection_pool=self.sync_pool)
         self._async_client = aioredis.Redis(connection_pool=self.async_pool)
         logger.info("Redis clients (sync and async) initialized successfully")
-
-    @property
-    def client(self) -> Redis:
-        """Get the singleton sync Redis client - for backward compatibility"""
-        return self._sync_client
 
     @property
     def async_client(self) -> aioredis.Redis:
@@ -94,7 +80,6 @@ class RedisService:
     def close(self):
         """Close the Redis clients and connection pools - only called during app shutdown"""
         logger.info("Closing Redis connection pools")
-        self._sync_client.close()
         # Note: async client close should be awaited, but this is for shutdown
         # In a proper shutdown sequence, you would await self._async_client.close()
 
@@ -109,10 +94,6 @@ def get_redis_service() -> RedisService:
     logger.info("Initializing RedisService (should happen once)")
     return RedisService()
 
-
-def get_redis_client() -> Redis:
-    """Get the singleton sync Redis client for direct usage - backward compatibility"""
-    return get_redis_service().client
 
 
 def get_async_redis_client() -> aioredis.Redis:

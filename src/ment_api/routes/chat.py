@@ -20,7 +20,7 @@ from ment_api.models.verification_state import VerificationState
 from ment_api.persistence import mongo, mongo_client
 from ment_api.services.notification_service import send_notification
 from ment_api.models.location_feed_post import FeedPost
-from ment_api.services.redis_service import get_redis_client
+from ment_api.services.redis_service import get_async_redis_client
 from ment_api.workers.message_state_worker import message_state_channel
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 user_connections: Dict[str, Set[str]] = {}
+user_info_by_connection: Dict[str, Dict[str, str]] = {}
 feed_connections: DefaultDict[str, Set[str]] = defaultdict(set)
 push_client = PushClient()
 
@@ -36,14 +37,24 @@ notification_queue: Dict[str, asyncio.Task] = {}
 
 
 async def delayed_send_chat_notification(
-    user_id: str, message: str, room_id: str, message_title: str
+    user_id: str, message: str, room_id: str, message_title: str, encrypted_content: str = None, nonce: str = None
 ):
     await asyncio.sleep(3)  # 3-second delay
+    notification_data = {
+        "type": "new_message", 
+        "roomId": room_id
+    }
+    
+    # Add encrypted data if available
+    if encrypted_content and nonce:
+        notification_data["encryptedContent"] = encrypted_content
+        notification_data["nonce"] = nonce
+    
     await send_notification(
         user_id,
         message_title,
         message,
-        data={"type": "new_message", "roomId": room_id},
+        data=notification_data,
     )
     # Update the last notification timestamp
     await mongo.notifications.insert_one(
@@ -54,15 +65,21 @@ async def delayed_send_chat_notification(
 
 
 async def send_chat_notification(
-    user_id: str, message: str, room_id: str, message_title: str
+    user_id: str, message: str, room_id: str, message_title: str, encrypted_content: str = None, nonce: str = None
 ):
-    logger.info(f"Queueing notification for {user_id}")
+    logger.info(
+        "Queueing notification for user",
+        extra={
+            "json_fields": {"user_id": user_id, "room_id": room_id, "operation": "queue_chat_notification"},
+            "labels": {"component": "chat_notifications"}
+        }
+    )
 
     if user_id in notification_queue:
         notification_queue[user_id].cancel()
 
     notification_queue[user_id] = asyncio.create_task(
-        delayed_send_chat_notification(user_id, message, room_id, message_title)
+        delayed_send_chat_notification(user_id, message, room_id, message_title, encrypted_content, nonce)
     )
 
 
@@ -77,15 +94,25 @@ async def connect(sid: str, environ: dict, auth) -> None:
         return
 
     if user_id not in user_connections:
+        user_info = await mongo.users.find_one({"external_user_id": user_id})
+        user_info_by_connection[user_id] = {
+            "user_username": user_info["username"],
+            "user_profile_picture": user_info["photos"][0]["image_url"][0],
+        }
         user_connections[user_id] = {sid}
     else:
+        user_info = await mongo.users.find_one({"external_user_id": user_id})
         user_connections[user_id].add(sid)
+        user_info_by_connection[user_id] = {
+            "user_username": user_info["username"],
+            "user_profile_picture": user_info["photos"][0]["image_url"][0],
+        }
 
     # Save task connection and public key in Redis
-    redis = get_redis_client()
+    redis = get_async_redis_client()
     if user_public_key:
         user_key = f"user_public_key:{user_id}"
-        redis.set(user_key, user_public_key)
+        await redis.set(user_key, user_public_key)
 
         # Find all chat rooms for this user
         chat_rooms = await mongo.chat_rooms.find_all({"participants": user_id})
@@ -115,7 +142,7 @@ async def disconnect(sid: str) -> None:
             if not connections:
                 del user_connections[user]
 
-    redis = get_redis_client()
+    redis = get_async_redis_client()
     for feed_id, connections in list(feed_connections.items()):
         if sid in connections:
             connections.remove(sid)
@@ -123,7 +150,7 @@ async def disconnect(sid: str) -> None:
                 del feed_connections[feed_id]
                 # Remove from Redis
                 redis_key = f"feed_connections:{feed_id}"
-                redis.srem(redis_key, sid)
+                await redis.srem(redis_key, sid)
 
     print(f"Client disconnected: {sid}")
 
@@ -151,19 +178,29 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
                 "private_message",
                 {
                     "sender": sender,
+                    "sender_username": user_info_by_connection[sender]["user_username"],
+                    "sender_profile_picture": user_info_by_connection[sender]["user_profile_picture"],
                     "encrypted_content": encrypted_content,
                     "nonce": nonce,
                     "temporary_id": temporary_id,
                 },
                 to=recipient_sid,
             )
+            
     else:
-        # Recipient is offline - just send a notification that there's a new message
+        # Recipient is offline - send notification with encrypted content
         message_title = (await mongo.users.find_one({"external_user_id": sender}))[
             "username"
         ] or "Ment"
-        await send_chat_notification(recipient, "მესიჯი", room_id, message_title)
-
+        await send_chat_notification(
+            recipient, 
+            "მესიჯი", 
+            room_id, 
+            message_title, 
+            encrypted_content, 
+            nonce
+        )
+    print(sender, recipient, room_id, encrypted_content, nonce)
     await mongo.chat_messages.insert_one(
         {
             "author_id": sender,
@@ -242,11 +279,20 @@ async def get_messages(
     external_user_id = request.state.supabase_user_id
     skip = (page - 1) * page_size
 
-    redis = get_redis_client()
+    redis = get_async_redis_client()
     # Get the user's public key timestamp
-    redis.get(f"user_public_key_timestamp:{external_user_id}")
+    timestamp = await redis.get(f"user_public_key_timestamp:{external_user_id}")
+
+    if timestamp:
+        timestamp = datetime.fromisoformat(timestamp)
+        # Convert timestamp to ObjectId format
+        timestamp_id = ObjectId.from_datetime(timestamp)
+    else:
+        timestamp = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        timestamp_id = ObjectId.from_datetime(timestamp)
+
     pipeline = [
-        {"$match": {"room_id": room_id}},
+        {"$match": {"_id": {"$gte": timestamp_id}, "room_id": room_id}},
         {"$sort": {"_id": -1}},
         {"$skip": skip},
         {"$limit": page_size},
@@ -254,7 +300,6 @@ async def get_messages(
 
     chat_messages = await mongo.chat_messages.aggregate(pipeline)
     messages_list = [ChatMessage(**message) for message in chat_messages]
-    messages_list.reverse()  # Reverse the array of messages
 
     # Calculate previous and next cursors
     previous_cursor = page - 1 if isinstance(page, int) and page > 1 else None
@@ -298,9 +343,9 @@ class GetUserChatRoomsResponse(BaseModel):
 async def get_user_chat_rooms(request: Request):
     try:
         external_user_id = request.state.supabase_user_id
-        redis = get_redis_client()
+        redis = get_async_redis_client()
         # Get the user's public key timestamp
-        timestamp_str = redis.get(f"user_public_key_timestamp:{external_user_id}")
+        timestamp_str = await redis.get(f"user_public_key_timestamp:{external_user_id}")
         if timestamp_str:
             datetime.fromisoformat(timestamp_str)
         else:
@@ -363,7 +408,8 @@ async def get_user_chat_rooms(request: Request):
         # Get all target users' public keys from Redis in batch
         if target_user_ids:
             redis_keys = [f"user_public_key:{user_id}" for user_id in target_user_ids]
-            public_keys = redis.mget(redis_keys)
+            public_keys = await redis.mget(redis_keys)
+            print(public_keys)
             public_key_map = dict(zip(target_user_ids, public_keys))
         else:
             public_key_map = {}
@@ -376,10 +422,13 @@ async def get_user_chat_rooms(request: Request):
                 (p for p in participants if p["external_user_id"] != external_user_id),
                 None,
             )
+            print(public_key_map)
             target_user_id = target_user["external_user_id"] if target_user else None
             target_public_key = (
                 public_key_map.get(target_user_id) if target_user_id else None
             )
+
+            print(target_public_key)
 
             room_obj = ChatRoom(
                 id=str(room["_id"]),
@@ -419,7 +468,8 @@ async def create_chat_room(
     create_request: CreateChatRoomRequest,
 ):
     external_user_id = request.state.supabase_user_id
-    redis = get_redis_client()
+    redis = get_async_redis_client()
+    print(create_request)
     async with mongo_client.db.client.start_session() as session:
         async with await session.start_transaction():
             # Check if room already exists with these participants
@@ -434,10 +484,10 @@ async def create_chat_room(
 
             # Store the requesting user's public key in Redis
             redis_key = f"user_public_key:{external_user_id}"
-            redis.set(redis_key, create_request.user_public_key)
+            await redis.set(redis_key, create_request.user_public_key)
 
             # Try to get target user's public key
-            target_key = redis.get(f"user_public_key:{create_request.target_user_id}")
+            target_key = await redis.get(f"user_public_key:{create_request.target_user_id}")
             target_public_key = target_key if target_key else None
 
             if existing_room:
@@ -498,13 +548,16 @@ class SendPublicKeyRequest(BaseModel):
 
 @router.post("/send-public-key")
 async def send_public_key(request: SendPublicKeyRequest):
-    redis = get_redis_client()
-    redis_key = f"user_public_key:{request.user_id}"
-    redis.set(redis_key, request.public_key)
-
+    # Updated to use async Redis
+    from ment_api.services.redis_service import get_async_redis_client
     # Save the last timestamp of when user generated the keys, so that we can exclude old chat messages which was generated with the old key
-    current_time = datetime.utcnow()
-    redis.set(f"user_public_key_timestamp:{request.user_id}", current_time.isoformat())
+
+    redis = get_async_redis_client()
+    asyncio.gather( 
+        redis.set(f"user_public_key:{request.user_id}", request.public_key),
+        redis.set(f"user_public_key_timestamp:{request.user_id}", datetime.utcnow().isoformat())
+    )
+
 
     return {"success": True}
 
@@ -520,7 +573,7 @@ async def get_chat_room(
 ):
     external_user_id = request.state.supabase_user_id
 
-    redis = get_redis_client()
+    redis = get_async_redis_client()
     chat_room = await mongo.chat_rooms.find_one({"_id": ObjectId(room_id)})
 
     if not chat_room:
@@ -536,7 +589,7 @@ async def get_chat_room(
     )
 
     user_list = [User(**user) for user in users]
-    target_key = redis.get(f"user_public_key:{target_user['external_user_id']}")
+    target_key = await redis.get(f"user_public_key:{target_user['external_user_id']}")
     target_public_key = target_key if target_key else None
 
     return ChatRoom(
@@ -554,7 +607,7 @@ async def get_random_unseen_feed_item(
 ) -> Optional[FeedPost]:
     viewer_key = f"task_viewers:{feed_id}"
     user_seen_key = f"user_seen:{feed_id}:{user_id}"
-    user_seen_posts = redis.smembers(user_seen_key)
+    user_seen_posts = await redis.smembers(user_seen_key)
     user_seen_post_ids = (
         [ObjectId(post_id) for post_id in user_seen_posts] if user_seen_posts else []
     )
@@ -596,23 +649,23 @@ async def get_random_unseen_feed_item(
 
     if posts:
         # Add to global seen posts in Redis
-        redis.sadd(viewer_key, str(posts[0].id))
+        await redis.sadd(viewer_key, str(posts[0].id))
         # Add to user specific seen posts
-        redis.sadd(user_seen_key, str(posts[0].id))
+        await redis.sadd(user_seen_key, str(posts[0].id))
         return posts[0]
     return None
 
 
 async def broadcast_feed_items():
-    redis = get_redis_client()
+    redis = get_async_redis_client()
     while True:
         await asyncio.sleep(5)  # Wait 5 seconds between broadcasts
 
         # Get all feed connections from Redis
-        all_feeds = redis.keys("feed_connections:*")
+        all_feeds = await redis.keys("feed_connections:*")
         for feed_key in all_feeds:
             feed_id = feed_key.split(":")[1]
-            sids = redis.smembers(feed_key)
+            sids = await redis.smembers(feed_key)
 
             for sid in sids:
                 # Find the user_id for this sid

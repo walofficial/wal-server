@@ -129,6 +129,7 @@ async def lifespan(local_app: FastAPI):
 
     # Shutdown code
     logger.info("Shutting down application")
+    redis_service = get_redis_service()
 
     # Clean up pub/sub subscribers
     await asyncio.gather(
@@ -139,35 +140,11 @@ async def lifespan(local_app: FastAPI):
         close_subscriber(video_processor_task),
         close_subscriber(translation_task),
         close_subscriber(media_post_generator_task),
+        cleanup_message_state_task(message_state_task),
+        close_mongo_client(),
+        redis_service.aclose(),
         return_exceptions=True,
     )
 
     langfuse.shutdown()
-
-    # Clean up message state task
-    await cleanup_message_state_task(message_state_task)
-
-    # Close Redis connections (both sync and async)
-    try:
-        redis_service = get_redis_service()
-        # Close sync Redis client
-        redis_service.close()
-        # Close async Redis client
-        await redis_service.aclose()
-        logger.info("Redis connections (sync and async) closed successfully")
-    except Exception as e:
-        logger.error(f"Error closing Redis connections: {e}")
-
-    # Close MongoDB connection
-    await close_mongo_client()
-
-    # Close LiveKit aiohttp session
-    try:
-        livekit_session = getattr(local_app.state, "livekit_session", None)
-        if livekit_session is not None:
-            await livekit_session.close()
-            logger.info("LiveKit HTTP session closed")
-    except Exception as e:
-        logger.error(f"Error closing LiveKit session: {e}")
-
     logger.info("Application shutdown complete")

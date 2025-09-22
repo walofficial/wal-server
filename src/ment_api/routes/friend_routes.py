@@ -14,7 +14,7 @@ from ment_api.services.notification_service import (
 
 import asyncio
 
-from ment_api.services.redis_service import get_redis_dependency
+from ment_api.services.redis_service import get_async_redis_client
 from pydantic import BaseModel
 
 router = APIRouter(
@@ -283,10 +283,10 @@ async def remove_friend(
 @router.get("/blocked", response_model=List[User], operation_id="get_blocked_friends")
 async def blocked_friends(
     request: Request,
-    redis: Redis = Depends(get_redis_dependency),
+    redis: Redis = Depends(get_async_redis_client),
 ):
     external_user_id = request.state.supabase_user_id
-    blocked_friends = [id for id in redis.smembers(str(external_user_id))]
+    blocked_friends = [id for id in await redis.smembers(str(external_user_id))]
 
     pipeline = [{"$match": {"_id": {"$in": blocked_friends}}}, {"$sort": {"_id": -1}}]
 

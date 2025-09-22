@@ -16,7 +16,7 @@ from ment_api.common.custom_object_id import CustomObjectId
 from ment_api.models.notification import NotificationType
 from ment_api.persistence import mongo
 from ment_api.services.notification_service import send_notification
-from ment_api.services.redis_service import get_redis_dependency
+from ment_api.services.redis_service import get_async_redis_client
 from ment_api.services.external_clients.langfuse_client import langfuse
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ class LikeVerificationResponse(BaseModel):
 async def like_verification(
     request: Request,
     verification_id: CustomObjectId,
-    redis: Redis = Depends(get_redis_dependency),
+    redis: Redis = Depends(get_async_redis_client),
 ):
     external_user_id = request.state.supabase_user_id
     verification = await mongo.verifications.find_one_by_id(verification_id)
@@ -155,7 +155,7 @@ async def like_verification(
 
         # Check if user has recently liked/unliked this verification
         redis_key = f"like_notification:{external_user_id}:{verification_id}"
-        if not redis.exists(redis_key):
+        if not await redis.exists(redis_key):
             sender = await mongo.users.find_one({"external_user_id": external_user_id})
             await send_notification(
                 str(verification["assignee_user_id"]),
@@ -168,7 +168,7 @@ async def like_verification(
                 },
             )
             # Set a cooldown period of 5 minutes
-            redis.setex(redis_key, 300, "1")
+            await redis.setex(redis_key, 300, "1")
 
     return LikeVerificationResponse(success=True)
 
@@ -244,18 +244,18 @@ class TrackImpressionsResponse(BaseModel):
 async def track_impressions(
     request: Request,
     verification_id: CustomObjectId,
-    redis: Redis = Depends(get_redis_dependency),
+    redis: Redis = Depends(get_async_redis_client),
 ):
     external_user_id = request.state.supabase_user_id
     redis_key = f"impressions:{verification_id}"
-    redis.incr(redis_key)
+    await redis.incr(redis_key)
 
     # Save who viewed it
     viewer_key = f"viewers:{verification_id}"
-    redis.sadd(viewer_key, str(external_user_id))
+    await redis.sadd(viewer_key, str(external_user_id))
 
     # Check if the user should be notified
-    impression_count = int(redis.get(redis_key) or 0)
+    impression_count = int(await redis.get(redis_key) or 0)
     notify_threshold = 100  # Example threshold for notification
 
     if impression_count == notify_threshold:
@@ -305,7 +305,7 @@ async def track_impressions(
                 },
             )
             # Set a cooldown period of 1 hour
-            redis.setex(f"impression_notification:{verification_id}", 3600, "1")
+            await redis.setex(f"impression_notification:{verification_id}", 3600, "1")
 
     return TrackImpressionsResponse(success=True)
 
@@ -322,13 +322,13 @@ class GetImpressionsCountResponse(BaseModel):
 )
 async def get_impressions_count(
     verification_id: CustomObjectId,
-    redis: Redis = Depends(get_redis_dependency),
+    redis: Redis = Depends(get_async_redis_client),
 ):
     redis_key = f"impressions:{verification_id}"
     viewer_key = f"viewers:{verification_id}"
 
-    impression_count = int(redis.get(redis_key) or 0)
-    viewers = redis.smembers(viewer_key)
+    impression_count = int(await redis.get(redis_key) or 0)
+    viewers = await redis.smembers(viewer_key)
     unique_viewers = len(viewers) if viewers else 0
 
     return GetImpressionsCountResponse(

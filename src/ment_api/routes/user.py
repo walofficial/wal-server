@@ -28,7 +28,7 @@ from ment_api.models.user import User, UserPhoto
 from ment_api.persistence import mongo
 from ment_api.persistence.mongo import create_translation_projection
 from ment_api.services.profile_placeholder_generator import set_placeholder_avatar
-from ment_api.services.redis_service import get_redis_dependency
+from ment_api.services.redis_service import get_async_redis_client
 from ment_api.utils.language_utils import normalize_language_code
 
 router = APIRouter(
@@ -619,13 +619,14 @@ async def check_registered_users(
 async def block(
     request: Request,
     target_id: Annotated[str, Path()],
-    redis: Redis = Depends(get_redis_dependency),
+    redis = Depends(get_async_redis_client),
+
 ):
     external_user_id = request.state.supabase_user_id
     target_id_str = str(target_id)
 
-    redis.sadd(external_user_id, target_id_str)
-    redis.sadd(target_id_str, external_user_id)
+    await redis.sadd(external_user_id, target_id_str)
+    await redis.sadd(target_id_str, external_user_id)
 
     await mongo.friendships.bulk_update(
         [
@@ -655,20 +656,21 @@ async def block(
         }
     )
 
-    return {"blockedIds": redis.smembers(external_user_id)}
+    return {"blockedIds": await redis.smembers(external_user_id)}
 
 
 @router.post("/unblock/{target_id}")
 async def unblock(
     request: Request,
     target_id: str,
-    redis: Redis = Depends(get_redis_dependency),
+    redis = Depends(get_async_redis_client),
+
 ):
     external_user_id = request.state.supabase_user_id
     target_id_str = target_id
 
-    redis.srem(external_user_id, target_id_str)
-    redis.srem(target_id_str, external_user_id)
+    await redis.srem(external_user_id, target_id_str)
+    await redis.srem(target_id_str, external_user_id)
 
     await mongo.friendships.bulk_update(
         [
@@ -683,7 +685,7 @@ async def unblock(
         ]
     )
 
-    return {"blockedIds": redis.smembers(external_user_id)}
+    return {"blockedIds": await redis.smembers(external_user_id)}
 
 
 class ReportRequest(BaseModel):
@@ -731,7 +733,7 @@ async def check_username(username: str):
 async def get_user_profile(
     user_id: str,
     request: Request,
-    redis: Redis = Depends(get_redis_dependency),
+    redis = Depends(get_async_redis_client),
 ):
     external_user_id = request.state.supabase_user_id
     # Get user data and run other queries in parallel
@@ -787,7 +789,7 @@ async def get_user_profile(
 
 @router.get(
     "/profile/username/{username}",
-    response_model=dict,
+    response_model=User,
     operation_id="get_user_profile_by_username",
 )
 async def get_user_profile_by_username(username: str):
@@ -796,7 +798,7 @@ async def get_user_profile_by_username(username: str):
         {
             "$search": {
                 "index": (
-                    "username_search_index_dev"
+                    "username_search_index_prod"
                     if settings.env == "dev"
                     else "username_search_index_prod"
                 ),
@@ -814,5 +816,5 @@ async def get_user_profile_by_username(username: str):
 
     user = users[0] if users else None
     if user:
-        raise HTTPException(status_code=400, detail="Username exists")
-    return {"ok": True}
+        return User(**user)
+    raise HTTPException(status_code=404, detail="User not found")
