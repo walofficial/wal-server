@@ -786,10 +786,9 @@ async def get_user_profile(
         user_id=str(user_id),
     )
 
-
 @router.get(
     "/profile/username/{username}",
-    response_model=User,
+    response_model=User | None,
     operation_id="get_user_profile_by_username",
 )
 async def get_user_profile_by_username(username: str):
@@ -817,4 +816,4 @@ async def get_user_profile_by_username(username: str):
     user = users[0] if users else None
     if user:
         return User(**user)
-    raise HTTPException(status_code=404, detail="User not found")
+    return None
