@@ -13,7 +13,6 @@ from fastapi import (
     Query,
     Request,
 )
-from redis import Redis
 
 from ment_api.common.custom_object_id import CustomObjectId
 from ment_api.common.utils import news_feeds_ids
@@ -21,7 +20,6 @@ from ment_api.models.location_feed_post import FeedPost
 from ment_api.persistence import mongo
 from ment_api.persistence.mongo import create_translation_projection
 from ment_api.configurations.config import settings
-from ment_api.services.redis_service import get_redis_dependency
 from ment_api.utils.language_utils import normalize_language_code
 
 router = APIRouter(
