@@ -18,3 +18,5 @@ class Feed(BaseModel):
     verification_count: Optional[int] = 0
     no_restrictions: Optional[bool] = False
     feed_language_code: Optional[str] = "ka"
+    # Means user should be near this location to be returned
+    nearby_feed: Optional[bool] = False

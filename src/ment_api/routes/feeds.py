@@ -382,6 +382,21 @@ async def get_location_feeds(
             if is_at_location:
                 feeds_at_location.append(feed_obj)
             else:
+                # Hide feeds marked as nearby-only when user is not at the location
+                if getattr(feed_obj, "nearby_feed", False):
+                    logger.info(
+                        "Skipping nearby-only feed for off-location user",
+                        extra={
+                            "json_fields": {
+                                "feed_id": str(feed_obj.id),
+                                "nearby_feed": True,
+                                "operation": "filter_nearby_only_feed",
+                            },
+                            "labels": {"component": "feeds"},
+                        },
+                    )
+                    continue
+
                 nearest_feeds.append(
                     FeedWithLocation(feed=feed_obj, nearest_location=nearest_location)
                 )

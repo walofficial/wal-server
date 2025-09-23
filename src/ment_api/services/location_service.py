@@ -86,7 +86,7 @@ async def get_nearest_locations_for_feeds(
 
     near_point = {
         "type": "Point",
-        "coordinates": [current_location[1], current_location[0]],
+        "coordinates": [current_location[0], current_location[1] ],
     }
 
     pipeline = [
@@ -133,7 +133,6 @@ async def get_nearest_locations_for_feeds(
             }
         },
     ]
-
     results = await mongo.feed_locations.aggregate(pipeline)
     mapping: Dict[CustomObjectId, Tuple[bool, Optional[Location]]] = {}
 
@@ -148,5 +147,4 @@ async def get_nearest_locations_for_feeds(
                 location=(nearest.get("lat", 0.0), nearest.get("lng", 0.0)),
             )
         mapping[feed_id] = (bool(doc.get("inside", 0)), location_obj)
-
     return mapping
