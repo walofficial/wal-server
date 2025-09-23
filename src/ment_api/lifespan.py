@@ -35,8 +35,10 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(local_app: FastAPI):
-    await initialize_mongo_client()
-    await initialize_db()
+    asyncio.gather(
+        initialize_mongo_client(),
+        initialize_db(),
+    )
 
     # Initialize LiveKit clients within the event loop context
     session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False))

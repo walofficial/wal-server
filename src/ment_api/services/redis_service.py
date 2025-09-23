@@ -101,10 +101,6 @@ def get_async_redis_client() -> aioredis.Redis:
     return get_redis_service().async_client
 
 
-async def get_redis_dependency():
-    """FastAPI dependency that provides the sync Redis client - backward compatibility"""
-    return get_redis_service().client
-
 
 async def get_async_redis_dependency():
     """FastAPI dependency that provides the async Redis client"""

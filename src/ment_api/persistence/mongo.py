@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any, Dict, List
 
@@ -118,175 +119,175 @@ external_articles = BaseMongo("external_articles")
 
 async def initialize_db() -> None:
     logger.info(f"Initializing database: {mongo_client.db}")
-    await mongo_client.db["notifications"].create_indexes(
-        [
-            IndexModel([("to_user_id", ASCENDING), ("created_at", DESCENDING)]),
-            IndexModel(
-                [
-                    ("from_user_id", ASCENDING),
-                    ("to_user_id", ASCENDING),
-                    ("type", ASCENDING),
-                    ("feed_id", ASCENDING),
-                    ("created_at", ASCENDING),
-                ]
-            ),
-        ]
-    )
-    await mongo_client.db["likes"].create_index(
-        [("user_id", ASCENDING), ("verification_id", ASCENDING)], unique=True
+    asyncio.gather(
+        mongo_client.db["notifications"].create_indexes(
+            [
+                IndexModel([("to_user_id", ASCENDING), ("created_at", DESCENDING)]),
+                IndexModel(
+                    [
+                        ("from_user_id", ASCENDING),
+                        ("to_user_id", ASCENDING),
+                        ("type", ASCENDING),
+                        ("feed_id", ASCENDING),
+                        ("created_at", ASCENDING),
+                    ]
+                ),
+            ]
+        ),
+        mongo_client.db["likes"].create_index(
+            [("user_id", ASCENDING), ("verification_id", ASCENDING)], unique=True
+        ),
+        mongo_client.db["live_users"].create_indexes(
+            [
+                IndexModel([("author_id", ASCENDING), ("feed_id", ASCENDING)]),
+                IndexModel([("expiration_date", ASCENDING)]),
+                IndexModel([("feed_id", ASCENDING), ("expiration_date", ASCENDING)]),
+            ]
+        ),
+        mongo_client.db["subscribed_space_users"].create_index(
+            [("user_id", ASCENDING), ("livekit_room_name", ASCENDING)], unique=True
+        ),
+        mongo_client.db["news"].create_index(
+            [("created_at", DESCENDING), ("id", DESCENDING)]
+        ),
+        mongo_client.db["users"].create_indexes(
+            [
+                IndexModel([("external_user_id", ASCENDING)], unique=True),
+                IndexModel([("username", ASCENDING)]),
+                IndexModel([("phone_number", ASCENDING)]),
+                IndexModel([("username", "text")], default_language="none"),
+            ]
+        ),
+        mongo_client.db["comments"].create_indexes(
+            [
+                IndexModel(
+                    [("verification_id", ASCENDING), ("created_at", DESCENDING)]
+                ),
+                IndexModel([("verification_id", ASCENDING), ("score", DESCENDING)]),
+                IndexModel([("author_id", ASCENDING)]),
+            ]
+        ),
+        mongo_client.db["comment_likes"].create_index(
+            [("user_id", ASCENDING), ("comment_id", ASCENDING)], unique=True
+        ),
+        mongo_client.db["comment_reactions"].create_indexes(
+            [
+                IndexModel(
+                    [("comment_id", ASCENDING), ("user_id", ASCENDING)], unique=True
+                ),
+                IndexModel([("comment_id", ASCENDING), ("reaction_type", ASCENDING)]),
+                IndexModel([("user_id", ASCENDING)]),
+                IndexModel([("created_at", DESCENDING)]),
+            ]
+        ),
+        mongo_client.db["verifications"].create_indexes(
+            [
+                IndexModel(
+                    [("assignee_user.user_id", ASCENDING), ("created_at", DESCENDING)]
+                ),
+                IndexModel([("assignee_user_id", ASCENDING), ("is_public", ASCENDING)]),
+                IndexModel([("livekit_room_name", ASCENDING)]),
+                IndexModel([("valid_until", DESCENDING)]),
+                IndexModel([("score", DESCENDING)]),
+            ]
+        ),
+        mongo_client.db["friendships"].create_index(
+            [("user_id", ASCENDING), ("friend_id", ASCENDING)], unique=True
+        ),
+        mongo_client.db["friend_requests"].create_index(
+            [("sender_id", ASCENDING), ("receiver_id", ASCENDING)], unique=True
+        ),
+        mongo_client.db["push-notification-tokens"].create_indexes(
+            [
+                IndexModel([("ownerId", ASCENDING)]),
+                IndexModel([("expo_push_token", ASCENDING)]),
+            ]
+        ),
+        mongo_client.db["fact_checks"].create_indexes(
+            [
+                IndexModel([("verification_id", ASCENDING)], unique=True),
+                IndexModel([("created_at", DESCENDING)]),
+            ]
+        ),
+        mongo_client.db["fact_check_ratings"].create_index(
+            [("user_id", ASCENDING), ("verification_id", ASCENDING)], unique=True
+        ),
+        mongo_client.db["chat_messages"].create_index(
+            [("room_id", ASCENDING), ("created_at", DESCENDING)]
+        ),
+        mongo_client.db["external_articles"].create_index(
+            [("external_id", ASCENDING)], unique=True
+        ),
+        mongo_client.db["feed_locations"].create_indexes(
+            [
+                IndexModel([("location", "2dsphere")]),
+                IndexModel([("feed_id", ASCENDING)]),
+            ]
+        ),
     )
 
-    await mongo_client.db["live_users"].create_indexes(
-        [
-            IndexModel([("author_id", ASCENDING), ("feed_id", ASCENDING)]),
-            IndexModel([("expiration_date", ASCENDING)]),
-            IndexModel([("feed_id", ASCENDING), ("expiration_date", ASCENDING)]),
-        ]
-    )
-    await mongo_client.db["subscribed_space_users"].create_index(
-        [("user_id", ASCENDING), ("livekit_room_name", ASCENDING)], unique=True
-    )
-    await mongo_client.db["news"].create_index(
-        [("created_at", DESCENDING), ("id", DESCENDING)]
-    )
-    await mongo_client.db["users"].create_indexes(
-        [
-            IndexModel([("external_user_id", ASCENDING)], unique=True),
-            IndexModel([("username", ASCENDING)]),
-            IndexModel([("phone_number", ASCENDING)]),
-            IndexModel([("username", "text")], default_language="none"),
-        ]
-    )
-    await mongo_client.db["comments"].create_indexes(
-        [
-            IndexModel([("verification_id", ASCENDING), ("created_at", DESCENDING)]),
-            IndexModel([("verification_id", ASCENDING), ("score", DESCENDING)]),
-            IndexModel([("author_id", ASCENDING)]),
-        ]
-    )
-    await mongo_client.db["comment_likes"].create_index(
-        [("user_id", ASCENDING), ("comment_id", ASCENDING)], unique=True
-    )
-    await mongo_client.db["comment_reactions"].create_indexes(
-        [
-            IndexModel(
-                [("comment_id", ASCENDING), ("user_id", ASCENDING)], unique=True
-            ),
-            IndexModel([("comment_id", ASCENDING), ("reaction_type", ASCENDING)]),
-            IndexModel([("user_id", ASCENDING)]),
-            IndexModel([("created_at", DESCENDING)]),
-        ]
-    )
-    await mongo_client.db["verifications"].create_indexes(
-        [
-            IndexModel(
-                [("assignee_user.user_id", ASCENDING), ("created_at", DESCENDING)]
-            ),
-            IndexModel([("assignee_user_id", ASCENDING), ("is_public", ASCENDING)]),
-            IndexModel([("livekit_room_name", ASCENDING)]),
-            IndexModel([("valid_until", DESCENDING)]),
-            IndexModel([("score", DESCENDING)]),
-        ]
-    )
-    await mongo_client.db["friendships"].create_index(
-        [("user_id", ASCENDING), ("friend_id", ASCENDING)], unique=True
-    )
-    await mongo_client.db["friend_requests"].create_index(
-        [("sender_id", ASCENDING), ("receiver_id", ASCENDING)], unique=True
-    )
-    await mongo_client.db["push-notification-tokens"].create_indexes(
-        [
-            IndexModel([("ownerId", ASCENDING)]),
-            IndexModel([("expo_push_token", ASCENDING)]),
-        ]
-    )
-    await mongo_client.db["fact_checks"].create_indexes(
-        [
-            IndexModel([("verification_id", ASCENDING)], unique=True),
-            IndexModel([("created_at", DESCENDING)]),
-        ]
-    )
+    # # Ensure Atlas Search index on verifications collection
+    # try:
+    #     search_indexes_cursor = await mongo_client.db[
+    #         "verifications"
+    #     ].list_search_indexes()
+    #     existing_search_indexes = await search_indexes_cursor.to_list(length=None)
+    #     existing_search_index_names = [
+    #         idx.get("name") for idx in existing_search_indexes
+    #     ]
 
-    await mongo_client.db["fact_check_ratings"].create_index(
-        [("user_id", ASCENDING), ("verification_id", ASCENDING)], unique=True
-    )
+    #     if "default" not in existing_search_index_names:
+    #         await mongo_client.db["verifications"].create_search_index(
+    #             {
+    #                 "definition": {
+    #                     "mappings": {
+    #                         "dynamic": True,
+    #                     }
+    #                 },
+    #                 "name": "default",
+    #             }
+    #         )
+    #         logger.info(
+    #             "Created Atlas Search index 'default' on 'verifications' collection"
+    #         )
+    #     else:
+    #         logger.info(
+    #             "Atlas Search index 'default' already exists on 'verifications' collection"
+    #         )
+    # except Exception as e:
+    #     logger.warning(f"Failed to ensure Atlas Search index on 'verifications': {e}")
 
-    await mongo_client.db["chat_messages"].create_index(
-        [("room_id", ASCENDING), ("created_at", DESCENDING)]
-    )
+    # # Create vector search index for title embeddings
+    # try:
+    #     # Check if vector index exists
+    #     search_indexes_cursor = await mongo_client.db[
+    #         "verifications"
+    #     ].list_search_indexes()
+    #     existing_search_indexes = await search_indexes_cursor.to_list(length=None)
+    #     existing_index_names = [idx.get("name") for idx in existing_search_indexes]
 
-    await mongo_client.db["external_articles"].create_index(
-        [("external_id", ASCENDING)], unique=True
-    )
-    # Geospatial indexes for fast location lookups
-    await mongo_client.db["feed_locations"].create_indexes(
-        [
-            IndexModel([("location", "2dsphere")]),
-            IndexModel([("feed_id", ASCENDING)]),
-        ]
-    )
-    # Ensure Atlas Search index on verifications collection
-    try:
-        search_indexes_cursor = await mongo_client.db[
-            "verifications"
-        ].list_search_indexes()
-        existing_search_indexes = await search_indexes_cursor.to_list(length=None)
-        existing_search_index_names = [
-            idx.get("name") for idx in existing_search_indexes
-        ]
+    #     if "title_embedding_index" not in existing_index_names:
+    #         await mongo_client.db["verifications"].create_search_index(
+    #             {
+    #                 "name": "title_embedding_index",
+    #                 "type": "vectorSearch",
+    #                 "definition": {
+    #                     "fields": [
+    #                         {
+    #                             "type": "vector",
+    #                             "path": "title_embedding",
+    #                             "numDimensions": 3072,
+    #                             "similarity": "cosine",
+    #                         }
+    #                     ]
+    #                 },
+    #             }
+    #         )
+    #         logger.info(
+    #             "Created vector search index 'title_embedding_index' on 'verifications' collection"
+    #         )
+    #     else:
+    #         logger.info("Vector search index 'title_embedding_index' already exists")
 
-        if "default" not in existing_search_index_names:
-            await mongo_client.db["verifications"].create_search_index(
-                {
-                    "definition": {
-                        "mappings": {
-                            "dynamic": True,
-                        }
-                    },
-                    "name": "default",
-                }
-            )
-            logger.info(
-                "Created Atlas Search index 'default' on 'verifications' collection"
-            )
-        else:
-            logger.info(
-                "Atlas Search index 'default' already exists on 'verifications' collection"
-            )
-    except Exception as e:
-        logger.warning(f"Failed to ensure Atlas Search index on 'verifications': {e}")
-
-    # Create vector search index for title embeddings
-    try:
-        # Check if vector index exists
-        search_indexes_cursor = await mongo_client.db[
-            "verifications"
-        ].list_search_indexes()
-        existing_search_indexes = await search_indexes_cursor.to_list(length=None)
-        existing_index_names = [idx.get("name") for idx in existing_search_indexes]
-
-        if "title_embedding_index" not in existing_index_names:
-            await mongo_client.db["verifications"].create_search_index(
-                {
-                    "name": "title_embedding_index",
-                    "type": "vectorSearch",
-                    "definition": {
-                        "fields": [
-                            {
-                                "type": "vector",
-                                "path": "title_embedding",
-                                "numDimensions": 3072,
-                                "similarity": "cosine",
-                            }
-                        ]
-                    },
-                }
-            )
-            logger.info(
-                "Created vector search index 'title_embedding_index' on 'verifications' collection"
-            )
-        else:
-            logger.info("Vector search index 'title_embedding_index' already exists")
-
-    except Exception as e:
-        logger.warning(f"Failed to ensure vector search index: {e}")
+    # except Exception as e:
+    #     logger.warning(f"Failed to ensure vector search index: {e}")
