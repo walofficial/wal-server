@@ -18,7 +18,7 @@ async def is_on_feed_location(
     try:
         near_point = {
             "type": "Point",
-            "coordinates": [current_location[1], current_location[0]],
+            "coordinates": [current_location[0],current_location[1], ],
         }
 
         pipeline = [
@@ -43,6 +43,7 @@ async def is_on_feed_location(
                 }
             },
         ]
+        print(pipeline)
 
         results = await mongo.feed_locations.aggregate(pipeline)
         if not results:
@@ -109,8 +110,8 @@ async def get_nearest_locations_for_feeds(
                         "address": "$address",
                         "radius": "$radius",
                         "distance": "$distance",
-                        "lat": {"$arrayElemAt": ["$location.coordinates", 1]},
-                        "lng": {"$arrayElemAt": ["$location.coordinates", 0]},
+                        "lat": {"$arrayElemAt": ["$location.coordinates", 0]},
+                        "lng": {"$arrayElemAt": ["$location.coordinates", 1]},
                     }
                 },
                 "inside": {

@@ -55,7 +55,6 @@ async def send_friend_request(
             ]
         }
     )
-
     if existing_request:
         return FriendRequestSentResponse(
             error_code="ALREADY_SENT",
@@ -82,7 +81,7 @@ async def send_friend_request(
     if receiver and sender:
         notification_message = f"{sender['username']} გამოგიგზავნათ მეგობრობა"
         await send_notification(
-            receiver["_id"],
+            receiver["external_user_id"],
             "მეგობრობის მოთხოვნა",
             notification_message,
             {"type": "friend_request_sent", "request_id": str(result.inserted_id)},
@@ -198,7 +197,7 @@ async def accept_friend_request(
             sender["_id"],
             "მეგობრები ხართ",
             notification_message,
-            {"type": "friend_request_accepted", "friend_id": str(receiver["_id"])},
+            {"type": "friend_request_accepted", "friend_id": str(receiver["external_user_id"])},
         )
 
     return {"message": "Friend request accepted"}
@@ -243,7 +242,6 @@ async def get_friends_list(
     ]
 
     friends = await mongo.users.aggregate(pipeline)
-
     return [User(**friend) for friend in friends]
 
 
