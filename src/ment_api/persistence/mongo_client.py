@@ -21,7 +21,6 @@ async def initialize_mongo_client() -> None:
     if db is None:
         db = _client[settings.mongodb_db_name]
 
-    await check_mongo_connection()
 
 
 async def check_mongo_connection() -> None:
