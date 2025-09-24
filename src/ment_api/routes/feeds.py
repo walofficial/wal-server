@@ -331,6 +331,7 @@ def get_location_feeds_pipeline(category_id: CustomObjectId):
                 "feed_locations": 1,
                 "feed_description": 1,
                 "hidden": 1,
+                "nearby_feed": 1,
             }
         },
     ]
@@ -515,19 +516,6 @@ async def get_single_feed(
         raise HTTPException(status_code=404, detail="Feed not found")
 
     return Feed(**feed)
-
-
-@router.get(
-    "/check-location",
-    response_model=Tuple[bool, Optional[Location]],
-    operation_id="check_location",
-)
-async def check_location(
-    feed_id: Annotated[CustomObjectId, Query()],
-    latitude: Annotated[float, Query()],
-    longitude: Annotated[float, Query()],
-) -> Tuple[bool, Optional[Location]]:
-    return await is_on_feed_location(feed_id, (latitude, longitude))
 
 
 class GoLiveRequest(BaseModel):
