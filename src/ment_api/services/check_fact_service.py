@@ -31,7 +31,9 @@ from ment_api.services.external_clients.models.vision_models import (
     OCRResponse,
     TextExtractRequest,
 )
-from ment_api.services.fact_checking_service import check_fact as jina_check_fact
+from ment_api.services.a2a_fact_check_service import (
+    check_fact as a2a_check_fact,
+)
 from ment_api.services.notification_service import send_notification
 from ment_api.services.score_generator_service import generate_score
 from ment_api.services.score_validity_service import calculate_valid_until_logarithmic
@@ -546,8 +548,8 @@ async def check_fact(
         if sources_length == 1:
             budget_tokens = 20000 * 2
 
-        # Step 3: Use Jina to perform the fact check with the enhanced statement
-        # This creates its own spans within the jina fact checking service
+        # Step 3: Use A2A Agent to perform the fact check with the enhanced statement
+        # This creates its own spans within the A2A fact checking service
 
         jina_request = FactCheckRequest(
             details=enhanced_statement,
@@ -556,7 +558,7 @@ async def check_fact(
         )
 
         logger.info(
-            "Starting Jina fact check analysis",
+            "Starting A2A fact check analysis",
             extra={
                 "json_fields": {
                     "verification_id": str(verification_id),
@@ -564,17 +566,17 @@ async def check_fact(
                     "enhanced_statement_length": len(enhanced_statement),
                     "sources_count": len(verification.get("sources", [])),
                     "base_operation": "fact_check",
-                    "operation": "fact_check_jina_start",
+                    "operation": "fact_check_a2a_start",
                 },
-                "labels": {"component": "fact_check_service", "phase": "jina"},
+                "labels": {"component": "fact_check_service", "phase": "a2a"},
             },
         )
         try:
-            fact_check_data = await jina_check_fact(jina_request)
+            fact_check_data = await a2a_check_fact(jina_request)
             
             if fact_check_data:
                 logger.info(
-                    "Jina fact check completed successfully",
+                    "A2A fact check completed successfully",
                     extra={
                         "json_fields": {
                             "verification_id": str(verification_id),
@@ -583,19 +585,19 @@ async def check_fact(
                             if hasattr(fact_check_data, "references")
                             else 0,
                             "base_operation": "fact_check",
-                            "operation": "fact_check_jina_success",
+                            "operation": "fact_check_a2a_success",
                         },
-                        "labels": {"component": "fact_check_service", "phase": "jina"},
+                        "labels": {"component": "fact_check_service", "phase": "a2a"},
                     },
                 )
             else:
                 logger.error(
-                    "Jina fact check returned no data",
+                    "A2A fact check returned no data",
                     extra={
                         "json_fields": {
                             "verification_id": str(verification_id),
                             "base_operation": "fact_check",
-                            "operation": "fact_check_jina_no_data",
+                            "operation": "fact_check_a2a_no_data",
                         },
                         "labels": {
                             "component": "fact_check_service",
@@ -606,14 +608,14 @@ async def check_fact(
 
         except Exception as e:
             logger.error(
-                "Jina fact check failed",
+                "A2A fact check failed",
                 extra={
                     "json_fields": {
                         "verification_id": str(verification_id),
                         "error": str(e),
                         "error_type": type(e).__name__,
                         "base_operation": "fact_check",
-                        "operation": "fact_check_jina_error",
+                        "operation": "fact_check_a2a_error",
                     },
                     "labels": {"component": "fact_check_service", "severity": "high"},
                 },
@@ -650,9 +652,7 @@ async def check_fact(
                     {"_id": verification_id},
                     {"$set": {"is_public": False}},
                 )
-            verification_span.update(
-                output={"status": "FAILED", "reason": "Jina fact check failed"}
-            )
+            verification_span.update(output={"status": "FAILED", "reason": "A2A fact check failed"})
             return None
         has_low_references = len(fact_check_data.references) < 3
         if has_low_references:
