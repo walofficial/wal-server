@@ -1,17 +1,17 @@
 import asyncio
 import logging
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import DefaultDict, Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 import socketio
 from ment_api.common.custom_object_id import CustomObjectId
 from bson import ObjectId
 from exponent_server_sdk import PushClient
 from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from fastapi.params import Query
 from pydantic import BaseModel
-from redis import Redis
+from redis.asyncio import Redis as AsyncRedis
 
 from ment_api.models.chat_message import ChatMessage
 from ment_api.models.message_state import MessageState
@@ -27,14 +27,24 @@ from ment_api.workers.message_state_worker import message_state_channel
 logger = logging.getLogger(__name__)
 
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter(prefix="/chat", tags=["chat"]) 
 
-user_connections: Dict[str, Set[str]] = {}
-user_info_by_connection: Dict[str, Dict[str, str]] = {}
-feed_connections: DefaultDict[str, Set[str]] = defaultdict(set)
 push_client = PushClient()
 
 notification_queue: Dict[str, asyncio.Task] = {}
+
+# Redis key helpers for scalable connection tracking
+def user_sids_key(user_id: str) -> str:
+    return f"user_sids:{user_id}"
+
+def sid_user_key(sid: str) -> str:
+    return f"sid_user:{sid}"
+
+def sid_device_key(sid: str) -> str:
+    return f"sid_device:{sid}"
+
+def user_info_key(user_id: str) -> str:
+    return f"user_info:{user_id}"
 
 
 async def delayed_send_chat_notification(
@@ -88,29 +98,57 @@ async def send_chat_notification(
 async def connect(sid: str, environ: dict, auth) -> None:
     user_id = auth.get("userId")
     user_public_key = auth.get("publicKey")  # Get public key from auth
+    device_id = auth.get("deviceId")
 
     if not user_id:
         await sio.emit("error", {"message": "Missing userId in auth"}, room=sid)
-        await sio.disconnect(sid)
+        # await sio.disconnect(sid)
         return
 
-    if user_id not in user_connections:
-        user_info = await mongo.users.find_one({"external_user_id": user_id})
-        user_info_by_connection[user_id] = {
-            "user_username": user_info["username"],
-            "user_profile_picture": user_info["photos"][0]["image_url"][0],
-        }
-        user_connections[user_id] = {sid}
-    else:
-        user_info = await mongo.users.find_one({"external_user_id": user_id})
-        user_connections[user_id].add(sid)
-        user_info_by_connection[user_id] = {
-            "user_username": user_info["username"],
-            "user_profile_picture": user_info["photos"][0]["image_url"][0],
-        }
+    if not device_id:
+        await sio.emit("error", {"message": "Missing deviceId in auth"}, room=sid)
+        # await sio.disconnect(sid)
+        return
 
-    # Save task connection and public key in Redis
+    # Save connection state in Redis
     redis = get_async_redis_client()
+    # Cache user info for fast message metadata (with TTL)
+    user_info = await mongo.users.find_one({"external_user_id": user_id})
+    if user_info:
+        await redis.hset(
+            user_info_key(user_id),
+            mapping={
+                "user_username": user_info.get("username") or "",
+                "user_profile_picture": (user_info.get("photos", [{}])[0].get("image_url", [""])[0] if user_info.get("photos") else ""),
+            },
+        )
+        await redis.expire(user_info_key(user_id), 3600)
+    # Track sid<->user and sid<->device mappings is deferred until after device enforcement
+
+    # Enforce single active device per user: if a different device connects, disconnect previous sockets
+    active_device_key = f"user_active_device:{user_id}"
+    current_active_device = await redis.get(active_device_key)
+    if current_active_device and current_active_device != device_id:
+        # Disconnect all previous connections of this user and notify them to logout
+        existing_sids = await redis.smembers(user_sids_key(user_id))
+        print(existing_sids)
+        for existing_sid in list(existing_sids or []):
+            try:
+                print(f"force_logout {existing_sid}")
+                await sio.emit("force_logout", {"reason": "new_device_login"}, to=existing_sid)
+            except Exception:
+                pass
+            # await sio.disconnect(existing_sid)
+            await redis.delete(sid_user_key(existing_sid))
+            await redis.delete(sid_device_key(existing_sid))
+            await redis.srem(user_sids_key(user_id), existing_sid)
+
+    # Set/update the active device for this user
+    await redis.set(active_device_key, device_id)
+    # Now safely track sid<->user and sid<->device mappings, and add sid to user's set
+    await redis.set(sid_user_key(sid), user_id)
+    await redis.set(sid_device_key(sid), device_id)
+    await redis.sadd(user_sids_key(user_id), sid)
     if user_public_key:
         user_key = f"user_public_key:{user_id}"
         await redis.set(user_key, user_public_key)
@@ -119,11 +157,9 @@ async def connect(sid: str, environ: dict, auth) -> None:
         chat_rooms = await mongo.chat_rooms.find_all({"participants": user_id})
         for room in chat_rooms:
             for participant in room["participants"]:
-                if (
-                    str(participant) != str(user_id)
-                    and str(participant) in user_connections
-                ):
-                    for participant_sid in user_connections[str(participant)]:
+                if str(participant) != str(user_id):
+                    participant_sids = await redis.smembers(user_sids_key(str(participant)))
+                    for participant_sid in list(participant_sids or []):
                         await sio.emit(
                             "user_public_key",
                             {
@@ -137,21 +173,21 @@ async def connect(sid: str, environ: dict, auth) -> None:
 
 @sio.event
 async def disconnect(sid: str) -> None:
-    for user, connections in list(user_connections.items()):
-        if sid in connections:
-            connections.remove(sid)
-            if not connections:
-                del user_connections[user]
-
     redis = get_async_redis_client()
-    for feed_id, connections in list(feed_connections.items()):
-        if sid in connections:
-            connections.remove(sid)
-            if not connections:
-                del feed_connections[feed_id]
-                # Remove from Redis
-                redis_key = f"feed_connections:{feed_id}"
-                await redis.srem(redis_key, sid)
+    # Resolve user for this sid and remove mappings
+    user_id = await redis.get(sid_user_key(sid))
+    if user_id:
+        await redis.srem(user_sids_key(user_id), sid)
+    await redis.delete(sid_user_key(sid))
+    await redis.delete(sid_device_key(sid))
+
+    # Remove from all feed connection sets in Redis
+    try:
+        feed_keys = await redis.keys("feed_connections:*")
+        for feed_key in feed_keys or []:
+            await redis.srem(feed_key, sid)
+    except Exception:
+        pass
 
     print(f"Client disconnected: {sid}")
 
@@ -167,20 +203,22 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
 
     logger.info(f"Forwarding encrypted message from {sid} to {recipient}")
 
-    for user, user_sids in user_connections.items():
-        if sid in user_sids:
-            sender = user
-            break
-    if recipient in user_connections:
-        # Recipient is online - forward the encrypted message
-        recipient_sids = user_connections[recipient]
-        for recipient_sid in recipient_sids:
+    redis = get_async_redis_client()
+    sender = await redis.get(sid_user_key(sid))
+    # Recipient is online - forward the encrypted message
+    recipient_sids = await redis.smembers(user_sids_key(recipient))
+    if recipient_sids:
+        # Get sender info from cache (fallback to empty strings)
+        sender_info = await redis.hgetall(user_info_key(sender)) if sender else {}
+        sender_username = sender_info.get("user_username", "")
+        sender_profile_picture = sender_info.get("user_profile_picture", "")
+        for recipient_sid in list(recipient_sids):
             await sio.emit(
                 "private_message",
                 {
                     "sender": sender,
-                    "sender_username": user_info_by_connection[sender]["user_username"],
-                    "sender_profile_picture": user_info_by_connection[sender]["user_profile_picture"],
+                    "sender_username": sender_username,
+                    "sender_profile_picture": sender_profile_picture,
                     "encrypted_content": encrypted_content,
                     "nonce": nonce,
                     "room_id": room_id,
@@ -219,15 +257,11 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
 async def notify_single_message_seen(sid: str, data: Dict[str, str]) -> None:
     recipient = data["recipient"]
     temporary_id = data["temporary_id"]
-    sender = None
-    for user, user_sids in user_connections.items():
-        if sid in user_sids:
-            sender = user
-            break
-
-    if recipient in user_connections:
-        recipient_sids = user_connections[recipient]
-        for recipient_sid in recipient_sids:
+    redis = get_async_redis_client()
+    sender = await redis.get(sid_user_key(sid))
+    recipient_sids = await redis.smembers(user_sids_key(recipient))
+    if recipient_sids:
+        for recipient_sid in list(recipient_sids):
             await sio.emit(
                 "notify_single_message_seen",
                 {
@@ -242,10 +276,14 @@ async def notify_single_message_seen(sid: str, data: Dict[str, str]) -> None:
 @sio.event
 async def check_user_connection(sid: str, data: Dict[str, str]) -> None:
     is_that_connected_id = data.get("is_that_connected_id")
-    if is_that_connected_id in user_connections:
-        await sio.emit("user_connection_status", {"is_connected": True}, to=sid)
-    else:
-        await sio.emit("user_connection_status", {"is_connected": False}, to=sid)
+    redis = get_async_redis_client()
+    is_connected = False
+    if is_that_connected_id:
+        try:
+            is_connected = bool(await redis.scard(user_sids_key(is_that_connected_id)))
+        except Exception:
+            is_connected = False
+    await sio.emit("user_connection_status", {"is_connected": is_connected}, to=sid)
 
 
 @router.post(
@@ -542,6 +580,7 @@ async def expire_chat_room(request: dict = Body(...)):
 class SendPublicKeyRequest(BaseModel):
     user_id: str
     public_key: str
+    device_id: Optional[str] = None
 
 
 @router.post("/send-public-key")
@@ -551,10 +590,33 @@ async def send_public_key(request: SendPublicKeyRequest):
     # Save the last timestamp of when user generated the keys, so that we can exclude old chat messages which was generated with the old key
 
     redis = get_async_redis_client()
-    asyncio.gather( 
-        redis.set(f"user_public_key:{request.user_id}", request.public_key),
-        redis.set(f"user_public_key_timestamp:{request.user_id}", datetime.utcnow().isoformat())
+    # Enforce single active device if provided
+    if request.device_id:
+        await redis.set(f"user_active_device:{request.user_id}", request.device_id)
+    # Persist public key and timestamp atomically and await results
+    await redis.set(f"user_public_key:{request.user_id}", request.public_key)
+    await redis.set(
+        f"user_public_key_timestamp:{request.user_id}", datetime.utcnow().isoformat()
     )
+    # If we know the device_id, proactively disconnect other device sessions for this user
+    if request.device_id:
+        try:
+            sids = await redis.smembers(user_sids_key(request.user_id))
+            for existing_sid in list(sids or []):
+                existing_device = await redis.get(sid_device_key(existing_sid))
+                if existing_device and existing_device != request.device_id:
+                    print(f"force_logout {existing_sid}")
+                    try:
+                        await sio.emit("force_logout", {"reason": "new_device_login"}, to=existing_sid)
+                    except Exception:
+                        pass
+                    # await sio.disconnect(existing_sid)
+                    await redis.srem(user_sids_key(request.user_id), existing_sid)
+                    await redis.delete(sid_user_key(existing_sid))
+                    await redis.delete(sid_device_key(existing_sid))
+        except Exception:
+            # Best-effort cleanup
+            pass
 
 
     return {"success": True}
@@ -601,7 +663,7 @@ async def get_chat_room(
 
 
 async def get_random_unseen_feed_item(
-    feed_id: str, user_id: str, redis: Redis
+    feed_id: str, user_id: str, redis: AsyncRedis
 ) -> Optional[FeedPost]:
     viewer_key = f"task_viewers:{feed_id}"
     user_seen_key = f"user_seen:{feed_id}:{user_id}"
@@ -666,12 +728,8 @@ async def broadcast_feed_items():
             sids = await redis.smembers(feed_key)
 
             for sid in sids:
-                # Find the user_id for this sid
-                user_id = None
-                for uid, user_sids in user_connections.items():
-                    if sid in user_sids:
-                        user_id = uid
-                        break
+                # Resolve the user_id for this sid from Redis
+                user_id = await redis.get(sid_user_key(sid))
                 if not user_id:
                     continue
 
@@ -691,3 +749,141 @@ async def broadcast_feed_items():
                         print(f"Broadcasted feed item to {sid}")
                 except Exception as e:
                     print(f"Error broadcasting feed item: {e}")
+
+class PublicKeyEntry(BaseModel):
+    user_id: str
+    username: Optional[str] = None
+    public_key: Optional[str]
+    timestamp: Optional[str]
+    active_device_id: Optional[str]
+    is_connected: bool = False
+
+
+class PublicKeysResponse(BaseModel):
+    keys: List[PublicKeyEntry]
+
+
+@router.get("/public-keys", response_model=PublicKeysResponse)
+async def list_public_keys() -> PublicKeysResponse:
+    redis = get_async_redis_client()
+    
+    # Get all user_public_key:* keys first
+    key_names = await redis.keys("user_public_key:*")
+    
+    if not key_names:
+        return PublicKeysResponse(keys=[])
+    
+    # Extract user_ids and build all keys we need to fetch
+    user_ids = [key_name.split(":", 1)[1] for key_name in key_names]
+    
+    # Fetch usernames for these users from Mongo in a single query
+    users = await mongo.users.find_all({"external_user_id": {"$in": user_ids}})
+    user_map = {u["external_user_id"]: u for u in users}
+    
+    # Build list of all keys to fetch in one mget call
+    all_keys = []
+    for user_id in user_ids:
+        all_keys.extend([
+            f"user_public_key:{user_id}",
+            f"user_public_key_timestamp:{user_id}",
+            f"user_active_device:{user_id}"
+        ])
+    
+    # Fetch all values in one Redis call
+    all_values = await redis.mget(all_keys)
+    
+    # Check connection status for all users
+    connection_status = {}
+    for user_id in user_ids:
+        try:
+            is_connected = bool(await redis.scard(user_sids_key(user_id)))
+            connection_status[user_id] = is_connected
+        except Exception:
+            connection_status[user_id] = False
+    
+    # Parse results and build entries
+    entries: List[PublicKeyEntry] = []
+    for i, user_id in enumerate(user_ids):
+        # Each user has 3 values: public_key, timestamp, active_device_id
+        base_index = i * 3
+        public_key = all_values[base_index]
+        timestamp = all_values[base_index + 1]
+        active_device_id = all_values[base_index + 2]
+        username = (user_map.get(user_id) or {}).get("username")
+        
+        entries.append(
+            PublicKeyEntry(
+                user_id=user_id,
+                username=username,
+                public_key=public_key,
+                timestamp=timestamp,
+                active_device_id=active_device_id,
+                is_connected=connection_status.get(user_id, False),
+            )
+        )
+    
+    # Sort entries by timestamp (most recent first)
+    entries.sort(
+        key=lambda entry: entry.timestamp or "",
+        reverse=True
+    )
+    
+    return PublicKeysResponse(keys=entries)
+
+@router.get("/public-keys/ui", response_class=HTMLResponse)
+async def public_keys_ui() -> HTMLResponse:
+    data = await list_public_keys()
+    
+    # Sort entries by timestamp (most recent first)
+    sorted_entries = sorted(
+        data.keys,
+        key=lambda entry: entry.timestamp or "",
+        reverse=True
+    )
+    
+    # Simple HTML table
+    rows = "".join(
+        f"<tr>"
+        f"<td>{entry.user_id}</td>"
+        f"<td>{entry.username or ''}</td>"
+        f"<td><code style='font-size:12px'>{(entry.public_key or '')[:32]}..." \
+        f"</code></td>"
+        f"<td>{entry.timestamp or ''}</td>"
+        f"<td>{entry.active_device_id or ''}</td>"
+        f"<td><span style='color: {'green' if entry.is_connected else 'red'}; font-weight: bold;'>{'🟢 Online' if entry.is_connected else '🔴 Offline'}</span></td>"
+        f"</tr>"
+        for entry in sorted_entries
+    )
+    html = f"""
+    <html>
+      <head>
+        <title>Public Keys</title>
+        <style>
+          body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; padding: 16px; }}
+          table {{ border-collapse: collapse; width: 100%; }}
+          th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+          th {{ background-color: #f2f2f2; }}
+          code {{ word-break: break-all; }}
+        </style>
+      </head>
+      <body>
+        <h1>Public Keys</h1>
+        <table>
+          <thead>
+            <tr>
+              <th>User ID</th>
+              <th>Username</th>
+              <th>Public Key</th>
+              <th>Updated At</th>
+              <th>Active Device</th>
+              <th>Connection Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows}
+          </tbody>
+        </table>
+      </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
