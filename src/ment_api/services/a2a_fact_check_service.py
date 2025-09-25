@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import uuid
@@ -7,16 +6,17 @@ from typing import Any, Optional
 import httpx
 from a2a.client import A2ACardResolver, A2AClient  # type: ignore
 from a2a.types import (  # type: ignore
-    AgentCard,
+    DataPart,
     MessageSendParams,
     SendMessageRequest,
     SendMessageResponse,
+    SendMessageSuccessResponse,
     Task,
 )
 
 from ment_api.models.fact_checking_models import (
-    FactCheckRequest,
     FactCheckingResult,
+    FactCheckRequest,
     JinaFactCheckResponse,
 )
 from ment_api.services.external_clients.langfuse_client import langfuse
@@ -25,6 +25,7 @@ from ment_api.services.fact_checking_service import (
 )
 
 logger = logging.getLogger(__name__)
+
 
 class A2AFactCheckAgent:
     """Simplified A2A fact-checking agent client."""
@@ -57,11 +58,12 @@ class A2AFactCheckAgent:
 
         return a2a_client
 
-    async def check_fact(self, request: FactCheckRequest) -> Optional[FactCheckingResult]:
+    async def check_fact(
+        self, request: FactCheckRequest
+    ) -> Optional[FactCheckingResult]:
         """Check a statement for factual accuracy."""
         client = await self._get_client()
 
-     
         prompt = create_fact_checking_prompt(request.details)
         message_id = uuid.uuid4().hex
 
@@ -100,32 +102,32 @@ class A2AFactCheckAgent:
                     params=MessageSendParams.model_validate(payload),  # type: ignore[arg-type]
                 )
 
-                response: SendMessageResponse = await client.send_message(message_request)
+                response: SendMessageResponse = await client.send_message(
+                    message_request
+                )
 
+                model: Optional[JinaFactCheckResponse] = None
+                raw_response: Optional[dict] = None
 
-                task: Task = response.root.result  # type: ignore[assignment]
-                text = self._extract_text_from_task(task)
-                if not text:
-                    logger.error(
-                        "A2A agent returned no text content",
-                        extra={
-                            "json_fields": {
-                                "verification_id": str(request.verification_id),
-                                "operation": "a2a_empty_text",
-                            },
-                            "labels": {"component": "a2a_fact_checker", "severity": "high"},
-                        },
-                    )
+                match response.root:
+                    case SendMessageSuccessResponse() as success_response:
+                        match success_response.result:
+                            case Task() as task:
+                                artifacts = task.artifacts or []
+                                for artifact in reversed(artifacts):
+                                    parts = artifact.parts or []
+                                    for part in reversed(parts):
+                                        match part.root:
+                                            case DataPart() as data_part:
+                                                raw_response = data_part.data.get(
+                                                    "response"
+                                                )
+                                                model = JinaFactCheckResponse(
+                                                    **raw_response
+                                                )
+
+                if not model:
                     return None
-
-                try:
-                    parsed = json.loads(text)
-                except Exception:
-                    # Some agents might wrap JSON in code fences; try to isolate
-                    cleaned = text.strip().strip("`")
-                    parsed = json.loads(cleaned)
-
-                model: JinaFactCheckResponse = JinaFactCheckResponse.model_validate(parsed)
 
                 result = FactCheckingResult(
                     factuality=model.factuality,
@@ -133,8 +135,8 @@ class A2AFactCheckAgent:
                     score_justification=model.score_justification,
                     reason_summary=model.reason_summary,
                     references=model.references,
-                    visited_urls=parsed.get("visitedURLs", []),
-                    read_urls=parsed.get("readURLs", []),
+                    visited_urls=raw_response.get("visitedURLs", []),
+                    read_urls=raw_response.get("readURLs", []),
                 )
 
                 gen.update(
