@@ -415,6 +415,7 @@ class ChatRoom(BaseModel):
     target_user_id: str = None
     user_public_key: str = None
     last_message: Optional[ChatMessage] = None
+    is_friend: bool = False
 
 
 class CreateChatRoomRequest(BaseModel):
@@ -701,6 +702,11 @@ async def get_chat_room(
     target_key = await redis.get(f"user_public_key:{target_user['external_user_id']}")
     target_public_key = target_key if target_key else None
 
+    is_friend = await mongo.friendships.find_one({
+        "user_id": external_user_id,
+        "friend_id": target_user["external_user_id"],
+    })
+
     return ChatRoom(
         id=str(chat_room["_id"]),
         participants=user_list,
@@ -708,6 +714,7 @@ async def get_chat_room(
         updated_at=chat_room["updated_at"],
         target_user_id=target_user["external_user_id"],
         user_public_key=target_public_key,
+        is_friend=is_friend is not None,
     )
 
 
