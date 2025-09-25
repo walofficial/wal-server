@@ -285,7 +285,7 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
         ] or "Ment"
         await send_chat_notification(
             recipient, 
-            "მესიჯი", 
+            "ახალი შეტყობინება", 
             room_id, 
             message_title, 
             encrypted_content, 
