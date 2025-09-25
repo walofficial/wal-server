@@ -462,7 +462,6 @@ async def live_users(
             "$project": {
                 "user": "$author",
                 "is_friend": 1,
-                "_id": 0,
             }
         },
         {"$sort": {"is_friend": -1}},  # Sort friends first

@@ -1,159 +1,246 @@
 import asyncio
 import logging
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from typing import DefaultDict, Dict, List, Optional, Set
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
 
 import socketio
 from ment_api.common.custom_object_id import CustomObjectId
 from bson import ObjectId
 from exponent_server_sdk import PushClient
 from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from fastapi.params import Query
 from pydantic import BaseModel
-from redis import Redis
+ 
 
 from ment_api.models.chat_message import ChatMessage
 from ment_api.models.message_state import MessageState
 from ment_api.models.update_message_request import UpdateMessageRequest
 from ment_api.models.user import User
-from ment_api.models.verification_state import VerificationState
+ 
 from ment_api.persistence import mongo, mongo_client
 from ment_api.services.notification_service import send_notification
-from ment_api.models.location_feed_post import FeedPost
+ 
 from ment_api.services.redis_service import get_async_redis_client
 from ment_api.workers.message_state_worker import message_state_channel
 
 logger = logging.getLogger(__name__)
 
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter(prefix="/chat", tags=["chat"]) 
 
-user_connections: Dict[str, Set[str]] = {}
-user_info_by_connection: Dict[str, Dict[str, str]] = {}
-feed_connections: DefaultDict[str, Set[str]] = defaultdict(set)
 push_client = PushClient()
 
 notification_queue: Dict[str, asyncio.Task] = {}
+
+# helper: atomic swap + return sids
+DEVICE_SWAP_LUA = """
+local prev = redis.call("GET", KEYS[1])
+redis.call("SET", KEYS[1], ARGV[1])
+local sids = redis.call("SMEMBERS", KEYS[2])
+return {prev, sids}
+"""
+
+SID_TTL_SECONDS = 24 * 3600
+
+# Redis key helpers for scalable connection tracking
+def user_sids_key(user_id: str) -> str:
+    return f"user_sids:{user_id}"
+
+def sid_user_key(sid: str) -> str:
+    return f"sid_user:{sid}"
+
+def sid_device_key(sid: str) -> str:
+    return f"sid_device:{sid}"
+
+def user_info_key(user_id: str) -> str:
+    return f"user_info:{user_id}"
 
 
 async def delayed_send_chat_notification(
     user_id: str, message: str, room_id: str, message_title: str, encrypted_content: str = None, nonce: str = None
 ):
-    await asyncio.sleep(3)  # 3-second delay
-    notification_data = {
-        "type": "new_message", 
-        "roomId": room_id
-    }
-    
-    # Add encrypted data if available
-    if encrypted_content and nonce:
-        notification_data["encryptedContent"] = encrypted_content
-        notification_data["nonce"] = nonce
-    
-    await send_notification(
-        user_id,
-        message_title,
-        message,
-        data=notification_data,
-    )
-    # Update the last notification timestamp
-    await mongo.notifications.insert_one(
-        {"user_id": user_id, "timestamp": datetime.utcnow()}
-    )
-    if user_id in notification_queue:
-        del notification_queue[user_id]
+    try:
+        await asyncio.sleep(3)
+        notification_data = {"type": "new_message", "roomId": room_id}
+        if encrypted_content and nonce:
+            # Consider not sending encrypted payload over push
+            notification_data["encryptedContent"] = encrypted_content
+            notification_data["nonce"] = nonce
+        await send_notification(user_id, message_title, message, data=notification_data)
+        await mongo.notifications.insert_one({"user_id": user_id, "timestamp": datetime.utcnow()})
+    except asyncio.CancelledError:
+        logger.debug(
+            "Notification task cancelled",
+            extra={
+                "json_fields": {"user_id": user_id, "room_id": room_id, "operation": "delayed_send_chat_notification_cancelled"},
+                "labels": {"component": "chat_notifications"},
+            },
+        )
+        raise
+    except Exception:
+        logger.exception(
+            "Error sending delayed notification",
+            extra={
+                "json_fields": {"user_id": user_id, "room_id": room_id, "operation": "delayed_send_chat_notification_error"},
+                "labels": {"component": "chat_notifications"},
+            },
+        )
+    finally:
+        notification_queue.pop(user_id, None)
 
 
 async def send_chat_notification(
     user_id: str, message: str, room_id: str, message_title: str, encrypted_content: str = None, nonce: str = None
 ):
     logger.info(
-        "Queueing notification for user",
+        "Queueing notification",
         extra={
             "json_fields": {"user_id": user_id, "room_id": room_id, "operation": "queue_chat_notification"},
-            "labels": {"component": "chat_notifications"}
-        }
+            "labels": {"component": "chat_notifications"},
+        },
     )
 
-    if user_id in notification_queue:
-        notification_queue[user_id].cancel()
+    old = notification_queue.get(user_id)
+    if old:
+        old.cancel()
+        try:
+            await asyncio.wait_for(old, timeout=1.0)
+        except Exception:
+            pass
 
-    notification_queue[user_id] = asyncio.create_task(
+    task = asyncio.create_task(
         delayed_send_chat_notification(user_id, message, room_id, message_title, encrypted_content, nonce)
     )
+    notification_queue[user_id] = task
 
 
 @sio.event
 async def connect(sid: str, environ: dict, auth) -> None:
     user_id = auth.get("userId")
-    user_public_key = auth.get("publicKey")  # Get public key from auth
+    user_public_key = auth.get("publicKey")
+    device_id = auth.get("deviceId")
 
-    if not user_id:
-        await sio.emit("error", {"message": "Missing userId in auth"}, room=sid)
+    if not user_id or not device_id:
+        await sio.emit("error", {"message": "Missing auth fields"}, room=sid)
         await sio.disconnect(sid)
         return
 
-    if user_id not in user_connections:
-        user_info = await mongo.users.find_one({"external_user_id": user_id})
-        user_info_by_connection[user_id] = {
-            "user_username": user_info["username"],
-            "user_profile_picture": user_info["photos"][0]["image_url"][0],
-        }
-        user_connections[user_id] = {sid}
-    else:
-        user_info = await mongo.users.find_one({"external_user_id": user_id})
-        user_connections[user_id].add(sid)
-        user_info_by_connection[user_id] = {
-            "user_username": user_info["username"],
-            "user_profile_picture": user_info["photos"][0]["image_url"][0],
-        }
-
-    # Save task connection and public key in Redis
     redis = get_async_redis_client()
-    if user_public_key:
-        user_key = f"user_public_key:{user_id}"
-        await redis.set(user_key, user_public_key)
 
-        # Find all chat rooms for this user
-        chat_rooms = await mongo.chat_rooms.find_all({"participants": user_id})
-        for room in chat_rooms:
-            for participant in room["participants"]:
-                if (
-                    str(participant) != str(user_id)
-                    and str(participant) in user_connections
-                ):
-                    for participant_sid in user_connections[str(participant)]:
-                        await sio.emit(
-                            "user_public_key",
-                            {
-                                "user_id": str(user_id),
-                                "public_key": user_public_key,
-                                "room_id": str(room["_id"]),
-                            },
-                            to=participant_sid,
-                        )
+    # Cache user info with TTL for fast metadata lookups
+    user_info = await mongo.users.find_one({"external_user_id": user_id})
+    if user_info:
+        profile_pic = ""
+        photos = user_info.get("photos") or []
+        if photos:
+            try:
+                profile_pic = photos[0].get("image_url", [""])[0]
+            except Exception:
+                profile_pic = ""
+        await redis.hset(
+            user_info_key(user_id),
+            mapping={
+                "user_username": user_info.get("username") or "",
+                "user_profile_picture": profile_pic,
+            },
+        )
+        await redis.expire(user_info_key(user_id), 3600)
+
+    # Atomically swap active device and fetch sids
+    active_device_key = f"user_active_device:{user_id}"
+    user_sids_key_name = user_sids_key(user_id)
+    try:
+        _prev_device, sids = await redis.eval(
+            DEVICE_SWAP_LUA, keys=[active_device_key, user_sids_key_name], args=[device_id]
+        )
+    except Exception:
+        # fallback to simple set
+        await redis.set(active_device_key, device_id)
+        sids = await redis.smembers(user_sids_key_name)
+        _prev_device = None
+
+    # Disconnect sids whose device != device_id
+    for existing_sid in list(sids or []):
+        existing_device = await redis.get(sid_device_key(existing_sid))
+        if existing_device and existing_device != device_id:
+            try:
+                await sio.emit("force_logout", {"reason": "new_device_login"}, to=existing_sid)
+            except Exception:
+                logger.debug(
+                    "emit force_logout failed",
+                    extra={
+                        "json_fields": {"sid": existing_sid, "operation": "force_logout_emit"},
+                        "labels": {"component": "chat_connect"},
+                    },
+                )
+            try:
+                await sio.disconnect(existing_sid)
+            except Exception:
+                logger.debug(
+                    "disconnect failed",
+                    extra={
+                        "json_fields": {"sid": existing_sid, "operation": "force_logout_disconnect"},
+                        "labels": {"component": "chat_connect"},
+                    },
+                )
+            await redis.srem(user_sids_key_name, existing_sid)
+            await redis.delete(sid_user_key(existing_sid))
+            await redis.delete(sid_device_key(existing_sid))
+
+    # Bookkeeping for this connection (with TTLs)
+    await redis.set(sid_user_key(sid), user_id, ex=SID_TTL_SECONDS)
+    await redis.set(sid_device_key(sid), device_id, ex=SID_TTL_SECONDS)
+    await redis.sadd(user_sids_key(user_id), sid)
+
+    if user_public_key:
+        await redis.set(f"user_public_key:{user_id}", user_public_key)
 
 
 @sio.event
 async def disconnect(sid: str) -> None:
-    for user, connections in list(user_connections.items()):
-        if sid in connections:
-            connections.remove(sid)
-            if not connections:
-                del user_connections[user]
-
     redis = get_async_redis_client()
-    for feed_id, connections in list(feed_connections.items()):
-        if sid in connections:
-            connections.remove(sid)
-            if not connections:
-                del feed_connections[feed_id]
-                # Remove from Redis
-                redis_key = f"feed_connections:{feed_id}"
-                await redis.srem(redis_key, sid)
+    # Resolve user for this sid and remove mappings
+    user_id = await redis.get(sid_user_key(sid))
+    if user_id:
+        await redis.srem(user_sids_key(user_id), sid)
+    await redis.delete(sid_user_key(sid))
+    await redis.delete(sid_device_key(sid))
+    logger.info(
+        "Client disconnected",
+        extra={
+            "json_fields": {"sid": sid, "operation": "disconnect"},
+            "labels": {"component": "chat_connect"},
+        },
+    )
 
-    print(f"Client disconnected: {sid}")
+
+@sio.event
+async def heartbeat(sid: str) -> None:
+    redis = get_async_redis_client()
+    try:
+        user_id = await redis.get(sid_user_key(sid))
+        device_id = await redis.get(sid_device_key(sid))
+        if user_id:
+            await redis.expire(sid_user_key(sid), SID_TTL_SECONDS)
+            await redis.sadd(user_sids_key(user_id), sid)
+        if device_id:
+            await redis.expire(sid_device_key(sid), SID_TTL_SECONDS)
+        logger.info(
+            "Heartbeat",
+            extra={
+                "json_fields": {"sid": sid, "user_id": user_id or "", "operation": "heartbeat"},
+                "labels": {"component": "chat_connect"},
+            },
+        )
+    except Exception:
+        logger.exception(
+            "Error in heartbeat",
+            extra={
+                "json_fields": {"sid": sid, "operation": "heartbeat_error"},
+                "labels": {"component": "chat_connect"},
+            },
+        )
 
 
 @sio.event
@@ -167,20 +254,22 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
 
     logger.info(f"Forwarding encrypted message from {sid} to {recipient}")
 
-    for user, user_sids in user_connections.items():
-        if sid in user_sids:
-            sender = user
-            break
-    if recipient in user_connections:
-        # Recipient is online - forward the encrypted message
-        recipient_sids = user_connections[recipient]
-        for recipient_sid in recipient_sids:
+    redis = get_async_redis_client()
+    sender = await redis.get(sid_user_key(sid))
+    # Recipient is online - forward the encrypted message
+    recipient_sids = await redis.smembers(user_sids_key(recipient))
+    if recipient_sids:
+        # Get sender info from cache (fallback to empty strings)
+        sender_info = await redis.hgetall(user_info_key(sender)) if sender else {}
+        sender_username = sender_info.get("user_username", "")
+        sender_profile_picture = sender_info.get("user_profile_picture", "")
+        for recipient_sid in list(recipient_sids):
             await sio.emit(
                 "private_message",
                 {
                     "sender": sender,
-                    "sender_username": user_info_by_connection[sender]["user_username"],
-                    "sender_profile_picture": user_info_by_connection[sender]["user_profile_picture"],
+                    "sender_username": sender_username,
+                    "sender_profile_picture": sender_profile_picture,
                     "encrypted_content": encrypted_content,
                     "nonce": nonce,
                     "room_id": room_id,
@@ -196,7 +285,7 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
         ] or "Ment"
         await send_chat_notification(
             recipient, 
-            "მესიჯი", 
+            "ახალი შეტყობინება", 
             room_id, 
             message_title, 
             encrypted_content, 
@@ -219,15 +308,11 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
 async def notify_single_message_seen(sid: str, data: Dict[str, str]) -> None:
     recipient = data["recipient"]
     temporary_id = data["temporary_id"]
-    sender = None
-    for user, user_sids in user_connections.items():
-        if sid in user_sids:
-            sender = user
-            break
-
-    if recipient in user_connections:
-        recipient_sids = user_connections[recipient]
-        for recipient_sid in recipient_sids:
+    redis = get_async_redis_client()
+    sender = await redis.get(sid_user_key(sid))
+    recipient_sids = await redis.smembers(user_sids_key(recipient))
+    if recipient_sids:
+        for recipient_sid in list(recipient_sids):
             await sio.emit(
                 "notify_single_message_seen",
                 {
@@ -242,10 +327,14 @@ async def notify_single_message_seen(sid: str, data: Dict[str, str]) -> None:
 @sio.event
 async def check_user_connection(sid: str, data: Dict[str, str]) -> None:
     is_that_connected_id = data.get("is_that_connected_id")
-    if is_that_connected_id in user_connections:
-        await sio.emit("user_connection_status", {"is_connected": True}, to=sid)
-    else:
-        await sio.emit("user_connection_status", {"is_connected": False}, to=sid)
+    redis = get_async_redis_client()
+    is_connected = False
+    if is_that_connected_id:
+        try:
+            is_connected = bool(await redis.scard(user_sids_key(is_that_connected_id)))
+        except Exception:
+            is_connected = False
+    await sio.emit("user_connection_status", {"is_connected": is_connected}, to=sid)
 
 
 @router.post(
@@ -326,6 +415,7 @@ class ChatRoom(BaseModel):
     target_user_id: str = None
     user_public_key: str = None
     last_message: Optional[ChatMessage] = None
+    is_friend: bool = False
 
 
 class CreateChatRoomRequest(BaseModel):
@@ -480,7 +570,6 @@ async def create_chat_room(
                 session=session,
             )
 
-            # Store the requesting user's public key in Redis
             redis_key = f"user_public_key:{external_user_id}"
             await redis.set(redis_key, create_request.user_public_key)
 
@@ -542,6 +631,7 @@ async def expire_chat_room(request: dict = Body(...)):
 class SendPublicKeyRequest(BaseModel):
     user_id: str
     public_key: str
+    device_id: Optional[str] = None
 
 
 @router.post("/send-public-key")
@@ -551,10 +641,32 @@ async def send_public_key(request: SendPublicKeyRequest):
     # Save the last timestamp of when user generated the keys, so that we can exclude old chat messages which was generated with the old key
 
     redis = get_async_redis_client()
-    asyncio.gather( 
-        redis.set(f"user_public_key:{request.user_id}", request.public_key),
-        redis.set(f"user_public_key_timestamp:{request.user_id}", datetime.utcnow().isoformat())
-    )
+    # Enforce single active device if provided
+    if request.device_id:
+        await redis.set(f"user_active_device:{request.user_id}", request.device_id)
+    # Persist public key and timestamp atomically and track in set
+    now_iso = datetime.utcnow().isoformat()
+    await redis.set(f"user_public_key:{request.user_id}", request.public_key)
+    await redis.set(f"user_public_key_timestamp:{request.user_id}", now_iso)
+    # If we know the device_id, proactively disconnect other device sessions for this user
+    if request.device_id:
+        try:
+            sids = await redis.smembers(user_sids_key(request.user_id))
+            for existing_sid in list(sids or []):
+                existing_device = await redis.get(sid_device_key(existing_sid))
+                if existing_device and existing_device != request.device_id:
+                    print(f"force_logout {existing_sid}")
+                    try:
+                        await sio.emit("force_logout", {"reason": "new_device_login"}, to=existing_sid)
+                    except Exception:
+                        pass
+                    await sio.disconnect(existing_sid)
+                    await redis.srem(user_sids_key(request.user_id), existing_sid)
+                    await redis.delete(sid_user_key(existing_sid))
+                    await redis.delete(sid_device_key(existing_sid))
+        except Exception:
+            # Best-effort cleanup
+            pass
 
 
     return {"success": True}
@@ -590,6 +702,11 @@ async def get_chat_room(
     target_key = await redis.get(f"user_public_key:{target_user['external_user_id']}")
     target_public_key = target_key if target_key else None
 
+    is_friend = await mongo.friendships.find_one({
+        "user_id": external_user_id,
+        "friend_id": target_user["external_user_id"],
+    })
+
     return ChatRoom(
         id=str(chat_room["_id"]),
         participants=user_list,
@@ -597,97 +714,198 @@ async def get_chat_room(
         updated_at=chat_room["updated_at"],
         target_user_id=target_user["external_user_id"],
         user_public_key=target_public_key,
+        is_friend=is_friend is not None,
     )
 
 
-async def get_random_unseen_feed_item(
-    feed_id: str, user_id: str, redis: Redis
-) -> Optional[FeedPost]:
-    viewer_key = f"task_viewers:{feed_id}"
-    user_seen_key = f"user_seen:{feed_id}:{user_id}"
-    user_seen_posts = await redis.smembers(user_seen_key)
-    user_seen_post_ids = (
-        [ObjectId(post_id) for post_id in user_seen_posts] if user_seen_posts else []
-    )
+# async def get_random_unseen_feed_item(
+#     feed_id: str, user_id: str, redis: AsyncRedis
+# ) -> Optional[FeedPost]:
+#     viewer_key = f"task_viewers:{feed_id}"
+#     user_seen_key = f"user_seen:{feed_id}:{user_id}"
+#     user_seen_posts = await redis.smembers(user_seen_key)
+#     user_seen_post_ids = (
+#         [ObjectId(post_id) for post_id in user_seen_posts] if user_seen_posts else []
+#     )
 
-    # Get timestamp from 1 minute ago
-    one_minute_ago = datetime.utcnow() - timedelta(minutes=1)
+#     # Get timestamp from 1 minute ago
+#     one_minute_ago = datetime.utcnow() - timedelta(minutes=1)
 
-    pipeline = [
-        {
-            "$match": {
-                "feed_id": ObjectId(feed_id),
-                "state": {
-                    "$in": [
-                        VerificationState.READY_FOR_USE,
-                        VerificationState.PROCESSING_MEDIA,
-                    ]
-                },
-                "is_public": True,
-                "_id": {"$nin": user_seen_post_ids},
-                "last_modified_date": {"$gte": one_minute_ago},
-            }
-        },
-        {
-            "$lookup": {
-                "from": "users",
-                "localField": "assignee_user_id",
-                "foreignField": "external_user_id",
-                "as": "assignee_user",
-            }
-        },
-        {"$unwind": "$assignee_user"},
-        {"$sort": {"last_modified_date": -1}},
-        {"$limit": 10},  # Get latest 10 posts
-        {"$sample": {"size": 1}},  # Randomly select 1
-    ]
+#     pipeline = [
+#         {
+#             "$match": {
+#                 "feed_id": ObjectId(feed_id),
+#                 "state": {
+#                     "$in": [
+#                         VerificationState.READY_FOR_USE,
+#                         VerificationState.PROCESSING_MEDIA,
+#                     ]
+#                 },
+#                 "is_public": True,
+#                 "_id": {"$nin": user_seen_post_ids},
+#                 "last_modified_date": {"$gte": one_minute_ago},
+#             }
+#         },
+#         {
+#             "$lookup": {
+#                 "from": "users",
+#                 "localField": "assignee_user_id",
+#                 "foreignField": "external_user_id",
+#                 "as": "assignee_user",
+#             }
+#         },
+#         {"$unwind": "$assignee_user"},
+#         {"$sort": {"last_modified_date": -1}},
+#         {"$limit": 10},  # Get latest 10 posts
+#         {"$sample": {"size": 1}},  # Randomly select 1
+#     ]
 
-    results = await mongo.verifications.aggregate(pipeline)
-    posts = [FeedPost(**post) for post in results]
+#     results = await mongo.verifications.aggregate(pipeline)
+#     posts = [FeedPost(**post) for post in results]
 
-    if posts:
-        # Add to global seen posts in Redis
-        await redis.sadd(viewer_key, str(posts[0].id))
-        # Add to user specific seen posts
-        await redis.sadd(user_seen_key, str(posts[0].id))
-        return posts[0]
-    return None
+#     if posts:
+#         # Add to global seen posts in Redis
+#         await redis.sadd(viewer_key, str(posts[0].id))
+#         # Add to user specific seen posts
+#         await redis.sadd(user_seen_key, str(posts[0].id))
+#         return posts[0]
+#     return None
+
+class PublicKeyEntry(BaseModel):
+    user_id: str
+    username: Optional[str] = None
+    public_key: Optional[str]
+    timestamp: Optional[str]
+    active_device_id: Optional[str]
+    is_connected: bool = False
 
 
-async def broadcast_feed_items():
+class PublicKeysResponse(BaseModel):
+    keys: List[PublicKeyEntry]
+
+
+@router.get("/public-keys", response_model=PublicKeysResponse)
+async def list_public_keys() -> PublicKeysResponse:
     redis = get_async_redis_client()
-    while True:
-        await asyncio.sleep(5)  # Wait 5 seconds between broadcasts
+    
+    # Get all user_public_key:* keys first
+    key_names = await redis.keys("user_public_key:*")
+    
+    if not key_names:
+        return PublicKeysResponse(keys=[])
+    
+    # Extract user_ids and build all keys we need to fetch
+    user_ids = [key_name.split(":", 1)[1] for key_name in key_names]
+    
+    # Fetch usernames for these users from Mongo in a single query
+    users = await mongo.users.find_all({"external_user_id": {"$in": user_ids}})
+    user_map = {u["external_user_id"]: u for u in users}
+    
+    # Build list of all keys to fetch in one mget call
+    all_keys = []
+    for user_id in user_ids:
+        all_keys.extend([
+            f"user_public_key:{user_id}",
+            f"user_public_key_timestamp:{user_id}",
+            f"user_active_device:{user_id}"
+        ])
+    
+    # Fetch all values in one Redis call
+    all_values = await redis.mget(all_keys)
+    
+    # Check connection status for all users
+    connection_status = {}
+    for user_id in user_ids:
+        try:
+            is_connected = bool(await redis.scard(user_sids_key(user_id)))
+            connection_status[user_id] = is_connected
+        except Exception:
+            connection_status[user_id] = False
+    
+    # Parse results and build entries
+    entries: List[PublicKeyEntry] = []
+    for i, user_id in enumerate(user_ids):
+        # Each user has 3 values: public_key, timestamp, active_device_id
+        base_index = i * 3
+        public_key = all_values[base_index]
+        timestamp = all_values[base_index + 1]
+        active_device_id = all_values[base_index + 2]
+        username = (user_map.get(user_id) or {}).get("username")
+        
+        entries.append(
+            PublicKeyEntry(
+                user_id=user_id,
+                username=username,
+                public_key=public_key,
+                timestamp=timestamp,
+                active_device_id=active_device_id,
+                is_connected=connection_status.get(user_id, False),
+            )
+        )
+    
+    # Sort entries by timestamp (most recent first)
+    entries.sort(
+        key=lambda entry: entry.timestamp or "",
+        reverse=True
+    )
+    
+    return PublicKeysResponse(keys=entries)
 
-        # Get all feed connections from Redis
-        all_feeds = await redis.keys("feed_connections:*")
-        for feed_key in all_feeds:
-            feed_id = feed_key.split(":")[1]
-            sids = await redis.smembers(feed_key)
+@router.get("/public-keys/ui", response_class=HTMLResponse)
+async def public_keys_ui() -> HTMLResponse:
+    data = await list_public_keys()
+    
+    # Sort entries by timestamp (most recent first)
+    sorted_entries = sorted(
+        data.keys,
+        key=lambda entry: entry.timestamp or "",
+        reverse=True
+    )
+    
+    # Simple HTML table
+    rows = "".join(
+        f"<tr>"
+        f"<td>{entry.user_id}</td>"
+        f"<td>{entry.username or ''}</td>"
+        f"<td><code style='font-size:12px'>{(entry.public_key or '')[:32]}..." \
+        f"</code></td>"
+        f"<td>{entry.timestamp or ''}</td>"
+        f"<td>{entry.active_device_id or ''}</td>"
+        f"<td><span style='color: {'green' if entry.is_connected else 'red'}; font-weight: bold;'>{'🟢 Online' if entry.is_connected else '🔴 Offline'}</span></td>"
+        f"</tr>"
+        for entry in sorted_entries
+    )
+    html = f"""
+    <html>
+      <head>
+        <title>Public Keys</title>
+        <style>
+          body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; padding: 16px; }}
+          table {{ border-collapse: collapse; width: 100%; }}
+          th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+          th {{ background-color: #f2f2f2; }}
+          code {{ word-break: break-all; }}
+        </style>
+      </head>
+      <body>
+        <h1>Public Keys</h1>
+        <table>
+          <thead>
+            <tr>
+              <th>User ID</th>
+              <th>Username</th>
+              <th>Public Key</th>
+              <th>Updated At</th>
+              <th>Active Device</th>
+              <th>Connection Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows}
+          </tbody>
+        </table>
+      </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
 
-            for sid in sids:
-                # Find the user_id for this sid
-                user_id = None
-                for uid, user_sids in user_connections.items():
-                    if sid in user_sids:
-                        user_id = uid
-                        break
-                if not user_id:
-                    continue
-
-                try:
-                    feed_item = await get_random_unseen_feed_item(
-                        feed_id, user_id, redis
-                    )
-
-                    # DO NOT broadcast to the user that created the feed item
-                    if feed_item and str(feed_item.assignee_user_id) != user_id:
-                        feed_item.last_modified_date = (
-                            feed_item.last_modified_date.isoformat()
-                        )
-                        await sio.emit(
-                            "new_feed_item", feed_item.model_dump(), room=sid
-                        )
-                        print(f"Broadcasted feed item to {sid}")
-                except Exception as e:
-                    print(f"Error broadcasting feed item: {e}")
