@@ -7,6 +7,8 @@ from fastapi import (
     HTTPException,
     Body,
     Request,
+    Query,
+    Depends,
 )
 from livekit.api.access_token import AccessToken, VideoGrants
 from livekit.api.room_service import RoomService
@@ -17,12 +19,16 @@ from livekit.protocol.room import (
     ListParticipantsRequest,
     RoomParticipantIdentity,
     ListRoomsRequest,
+    CreateRoomRequest,
+    RoomEgress,
 )
+from livekit.protocol.agent_dispatch import CreateAgentDispatchRequest
 from ment_api.configurations.config import settings
 import aiohttp
 from ment_api.persistence import mongo
 
 from ment_api.common.custom_object_id import CustomObjectId
+from ment_api.routes.livekit import get_agent_dispatch_service
 from ment_api.services.google_tasks_service import create_http_task
 from ment_api.services.notification_service import send_new_sms_notification
 import asyncio
@@ -32,6 +38,7 @@ import json
 from typing import Dict
 from pydantic import BaseModel
 from ment_api.models.user import User
+from livekit.api.agent_dispatch_service import AgentDispatchService
 
 
 BATCH_SIZE = 100  # Number of notifications to send in each batch
@@ -190,7 +197,9 @@ async def create_stream(
                 {
                     "is_host": is_host,
                     "username": userObj.username,
-                    "avatar_image": userObj.photos[0]["image_url"][0],
+                    "avatar_image": userObj.photos[0].image_url[0]
+                    if userObj.photos
+                    else "",
                 }
             )
         )
@@ -211,7 +220,7 @@ class CreateSpaceResponse(BaseModel):
     room_name: str
     verification_id: str
     space_state: str
-    scheduled_at: datetime
+    scheduled_at: Optional[datetime] = None
 
 
 @router.post(
@@ -236,6 +245,15 @@ async def create_space(
     # Generate a unique name for the "space" (room).
     room_name = f"ment-space-{uuid.uuid4()}"
     current_time = datetime.now(timezone.utc)
+
+    room_service = await get_room_service()
+    await room_service.create_room(
+        CreateRoomRequest(
+            name=room_name,
+            empty_timeout=30,
+            max_participants=1000,
+        )
+    )
 
     # Decide space_state based on scheduled_at
     if scheduled_at and scheduled_at > current_time:
@@ -622,3 +640,29 @@ def get_or_create_participant_metadata(participant):
         "invited_to_stage": False,
         "avatar_image": f"https://api.multiavatar.com/{participant.identity}.png",
     }
+
+
+@router.post("/invoke-agent", operation_id="invoke_agent")
+async def invoke_agent(
+    room_name: Annotated[str, Query(embed=True)],
+    agent_dispatch_service: AgentDispatchService = Depends(get_agent_dispatch_service),
+):
+    try:
+        await agent_dispatch_service.create_dispatch(
+            CreateAgentDispatchRequest(
+                agent_name="agent-helper",
+                room=room_name,
+                metadata=json.dumps(
+                    {
+                        "hand_raised": True,
+                        "invited_to_stage": True,
+                        "avatar_image": "https://m.media-amazon.com/images/M/MV5BMTQ2MjMwNDA3Nl5BMl5BanBnXkFtZTcwMTA2NDY3NQ@@._V1_FMjpg_UX1000_.jpg",
+                    }
+                ),
+            )
+        )
+    except Exception as e:
+        print(e)
+        logger.error(f"Error in invoke_agent: {str(e)}")
+        raise
+    return {"message": "Agent invoked successfully"}

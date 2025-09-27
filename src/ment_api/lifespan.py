@@ -4,6 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from livekit.api.agent_dispatch_service import AgentDispatchService
 from ment_api.services.external_clients.langfuse_client import langfuse
 
 from ment_api.configurations.config import settings
@@ -49,6 +50,12 @@ async def lifespan(local_app: FastAPI):
 
         local_app.state.livekit_session = session
         local_app.state.livekit_room_service = RoomService(
+            session=session,
+            url=_settings.livekit_url,
+            api_key=_settings.livekit_api_key,
+            api_secret=_settings.livekit_api_secret,
+        )
+        local_app.state.livekit_agent_dispatch_service = AgentDispatchService(
             session=session,
             url=_settings.livekit_url,
             api_key=_settings.livekit_api_key,
