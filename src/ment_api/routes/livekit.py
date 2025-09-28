@@ -4,10 +4,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Body, Header, Query, Request, HTTPException, Depends
-from livekit.api.access_token import AccessToken, VideoGrants
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
+from livekit.api.access_token import AccessToken, TokenVerifier, VideoGrants
+from livekit.api.agent_dispatch_service import AgentDispatchService
 from livekit.api.ingress_service import IngressService
 from livekit.api.room_service import RoomService
+from livekit.api.webhook import WebhookReceiver
 from livekit.protocol.egress import (
     AutoParticipantEgress,
     EncodingOptionsPreset,
@@ -15,15 +17,18 @@ from livekit.protocol.egress import (
     SegmentedFileOutput,
 )
 from livekit.protocol.ingress import CreateIngressRequest, IngressInput
-from livekit.protocol.room import CreateRoomRequest, RoomConfiguration, RoomEgress, DeleteRoomRequest
+from livekit.protocol.room import (
+    CreateRoomRequest,
+    DeleteRoomRequest,
+    RoomConfiguration,
+    RoomEgress,
+)
 from pydantic import BaseModel
 
 from ment_api.common.custom_object_id import CustomObjectId
 from ment_api.configurations.config import settings
 from ment_api.models.verification_state import VerificationState
 from ment_api.persistence import mongo
-from livekit.api.webhook import WebhookReceiver
-from livekit.api.access_token import TokenVerifier
 
 router = APIRouter(prefix="/live", tags=["live"])
 LIVEKIT_API_KEY = settings.livekit_api_key
@@ -52,19 +57,32 @@ class StartLiveResponse(BaseModel):
 async def get_room_service(request: Request) -> RoomService:
     svc = getattr(request.app.state, "livekit_room_service", None)
     if svc is None:
-        raise HTTPException(status_code=500, detail="LiveKit RoomService not initialized")
+        raise HTTPException(
+            status_code=500, detail="LiveKit RoomService not initialized"
+        )
+    return svc
+
+
+async def get_agent_dispatch_service(request: Request) -> AgentDispatchService:
+    svc = getattr(request.app.state, "livekit_agent_dispatch_service", None)
+    if svc is None:
+        raise HTTPException(
+            status_code=500, detail="LiveKit AgentDispatchService not initialized"
+        )
     return svc
 
 
 async def get_ingress_service(request: Request) -> IngressService:
     svc = getattr(request.app.state, "livekit_ingress_service", None)
     if svc is None:
-        raise HTTPException(status_code=500, detail="LiveKit IngressService not initialized")
+        raise HTTPException(
+            status_code=500, detail="LiveKit IngressService not initialized"
+        )
     return svc
 
 
 @router.post("/webhook", operation_id="live_webhook", response_model=bool)
-async def web(request: Request,  authorization: str = Header(None)):
+async def web(request: Request, authorization: str = Header(None)):
     rawBody = await request.body()
     webhook_receiver = WebhookReceiver(
         TokenVerifier(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
@@ -80,10 +98,8 @@ async def web(request: Request,  authorization: str = Header(None)):
                     "event_type": event_data_json.event,
                     "raw_body_length": len(rawBody),
                 },
-                "labels": {
-                    "component": "livekit_webhook"
-                }
-            }
+                "labels": {"component": "livekit_webhook"},
+            },
         )
         # Stringify the event data for logging/debugging
         # Verify and process the webhook event
@@ -104,7 +120,7 @@ async def web(request: Request,  authorization: str = Header(None)):
         if event == "egress_updated":
             egressInfo = event_data_json.egress_info
             roomName = egressInfo.room_name if egressInfo else None
-         
+
             status = egressInfo.status
             if status == "EGRESS_ACTIVE":
                 await mongo.verifications.update_one(
@@ -318,28 +334,28 @@ async def start_live(
 
     verification_doc = await mongo.verifications.insert_one(insert_doc)
     roomId = str(room_name)
-    print(settings.gcp_service_account_livekit)
+
     room = await room_service.create_room(
-            CreateRoomRequest(
+        CreateRoomRequest(
             name=room_name,
             empty_timeout=30,
             max_participants=1000,
             egress=RoomEgress(
-                    participant=AutoParticipantEgress(
-                        preset=EncodingOptionsPreset.PORTRAIT_H264_1080P_60,
-                        segment_outputs=[
-                            SegmentedFileOutput(
-                                # Filename prefix is the each of the segment file prefix, that's why we make sure they are in a sub folder
-                                filename_prefix=f"livekit-recording/{roomId}/{roomId}",
-                                segment_duration=3,
-                                gcp=GCPUpload(
-                                    credentials=settings.gcp_service_account_livekit,
-                                    bucket="ment-verification",
-                                ),
+                participant=AutoParticipantEgress(
+                    preset=EncodingOptionsPreset.PORTRAIT_H264_1080P_60,
+                    segment_outputs=[
+                        SegmentedFileOutput(
+                            # Filename prefix is the each of the segment file prefix, that's why we make sure they are in a sub folder
+                            filename_prefix=f"livekit-recording/{roomId}/{roomId}",
+                            segment_duration=3,
+                            gcp=GCPUpload(
+                                credentials=settings.gcp_service_account_livekit,
+                                bucket="ment-verification",
                             ),
-                        ],
-                    )
-                ),
+                        ),
+                    ],
+                )
+            ),
         )
     )
     token = (
