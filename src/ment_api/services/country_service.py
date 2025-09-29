@@ -3,7 +3,6 @@ from typing import Tuple
 import geoip2.database
 from fastapi import Request
 
-
 # Initialize GeoIP2 reader once per process
 _geoip_reader = geoip2.database.Reader("GeoLite2-Country.mmdb")
 
@@ -77,5 +76,5 @@ def get_country_for_request(request: Request) -> Tuple[str, str, str]:
         country_code = response.country.iso_code or "GE"
     except Exception:
         country_code = "GE"
-
+    print(f"Country code: {country_code}, IP: {ip}")
     return country_code, ip, _get_ip_detection_method(request, ip)
