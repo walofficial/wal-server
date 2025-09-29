@@ -6,14 +6,15 @@ from typing import Any, Optional
 import httpx
 from a2a.client import A2ACardResolver, A2AClient  # type: ignore
 from a2a.types import (  # type: ignore
-    DataPart,
     MessageSendParams,
     SendMessageRequest,
     SendMessageResponse,
     SendMessageSuccessResponse,
     Task,
+    TextPart,
 )
 
+from ment_api.configurations.config import settings
 from ment_api.models.fact_checking_models import (
     FactCheckingResult,
     FactCheckRequest,
@@ -37,11 +38,11 @@ class A2AFactCheckAgent:
 
     async def _get_client(self) -> A2AClient:
         """Get initialized A2A client."""
-        async with httpx.AsyncClient(timeout=1000) as client:
+        async with httpx.AsyncClient(timeout=5000) as client:
             resolver = A2ACardResolver(client, self.agent_url)
             agent_card = await resolver.get_agent_card()
 
-        httpx_client = httpx.AsyncClient(timeout=1000, headers=self.headers)
+        httpx_client = httpx.AsyncClient(timeout=5000, headers=self.headers)
         a2a_client = A2AClient(httpx_client, agent_card, url=self.agent_url)
 
         logger.info(
@@ -118,12 +119,9 @@ class A2AFactCheckAgent:
                                     parts = artifact.parts or []
                                     for part in reversed(parts):
                                         match part.root:
-                                            case DataPart() as data_part:
-                                                raw_response = data_part.data.get(
-                                                    "response"
-                                                )
-                                                model = JinaFactCheckResponse(
-                                                    **raw_response
+                                            case TextPart() as text_part:
+                                                model = JinaFactCheckResponse.model_validate_json(
+                                                    text_part.text
                                                 )
 
                 if not model:
@@ -135,8 +133,8 @@ class A2AFactCheckAgent:
                     score_justification=model.score_justification,
                     reason_summary=model.reason_summary,
                     references=model.references,
-                    visited_urls=raw_response.get("visitedURLs", []),
-                    read_urls=raw_response.get("readURLs", []),
+                    visited_urls=[],
+                    read_urls=[],
                 )
 
                 gen.update(
@@ -180,10 +178,7 @@ def _get_fact_check_agent() -> A2AFactCheckAgent:
     """Get or create the global fact-check agent instance."""
     global _fact_check_agent
     if _fact_check_agent is None:
-        agent_url = os.getenv(
-            "A2A_FACT_CHECK_AGENT_URL",
-            "http://host.docker.internal:8080",
-        )
+        agent_url = settings.wal_fact_checker_uri
         _fact_check_agent = A2AFactCheckAgent(agent_url)
     return _fact_check_agent
 
