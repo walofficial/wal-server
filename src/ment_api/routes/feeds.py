@@ -790,7 +790,9 @@ async def publish_post(
 
             try:
                 result = await mongo.verifications.insert_one(verification_doc)
-                logger.info(f"Verification document inserted successfully: {result.inserted_id} and with potential verification id: {potential_verification_id}")
+                logger.info(
+                    f"Verification document inserted successfully: {result.inserted_id} and with potential verification id: {potential_verification_id}"
+                )
 
                 logger.info(
                     "Verification document inserted successfully",
@@ -1137,6 +1139,8 @@ async def get_screenshot(
             height=1080,
             particularScreenShot="#static-view",
             geoCode="is",
+            waitForImages=True,
+            super=False,
         )
 
         screenshot_data = result.get("screenshot_data")
@@ -1436,6 +1440,8 @@ async def generate_social_media_content(
                 height=1080,
                 particularScreenShot="#static-view",
                 geoCode="is",
+                waitForImages=True,
+                super=False,
             )
 
             screenshot_data = result.get("screenshot_data")

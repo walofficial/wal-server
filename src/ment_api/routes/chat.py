@@ -4,30 +4,35 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import socketio
-from ment_api.common.custom_object_id import CustomObjectId
 from bson import ObjectId
 from exponent_server_sdk import PushClient
 from fastapi import APIRouter, Body, HTTPException, Request
-from fastapi.responses import HTMLResponse
 from fastapi.params import Query
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
- 
+from socketio import AsyncRedisManager
 
+from ment_api.common.custom_object_id import CustomObjectId
+from ment_api.configurations.config import settings
 from ment_api.models.chat_message import ChatMessage
 from ment_api.models.message_state import MessageState
 from ment_api.models.update_message_request import UpdateMessageRequest
 from ment_api.models.user import User
- 
 from ment_api.persistence import mongo, mongo_client
 from ment_api.services.notification_service import send_notification
- 
 from ment_api.services.redis_service import get_async_redis_client
 from ment_api.workers.message_state_worker import message_state_channel
 
 logger = logging.getLogger(__name__)
 
-sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
-router = APIRouter(prefix="/chat", tags=["chat"]) 
+redis_url = (
+    f"redis://:{settings.redis_password}@{settings.redis_host}:{settings.redis_port}"
+)
+mgr = AsyncRedisManager(redis_url)
+sio = socketio.AsyncServer(
+    async_mode="asgi", cors_allowed_origins="*", client_manager=mgr
+)
+router = APIRouter(prefix="/chat", tags=["chat"])
 
 push_client = PushClient()
 
@@ -43,22 +48,103 @@ return {prev, sids}
 
 SID_TTL_SECONDS = 24 * 3600
 
+
 # Redis key helpers for scalable connection tracking
 def user_sids_key(user_id: str) -> str:
     return f"user_sids:{user_id}"
 
+
 def sid_user_key(sid: str) -> str:
     return f"sid_user:{sid}"
 
+
 def sid_device_key(sid: str) -> str:
     return f"sid_device:{sid}"
+
 
 def user_info_key(user_id: str) -> str:
     return f"user_info:{user_id}"
 
 
+async def broadcast_user_public_key(user_id: str, public_key: str) -> None:
+    """Notify all online participants across the user's chat rooms about the user's latest public key.
+
+    Looks up all chat rooms that include the `user_id` in `participants` (stored as external_user_id strings),
+    and for each other participant that is currently connected, emits a `user_public_key` event scoped to
+    that chat room.
+    """
+    if not user_id or not public_key:
+        return
+
+    redis = get_async_redis_client()
+    try:
+        chat_rooms = await mongo.chat_rooms.find_all({"participants": user_id})
+        for room in chat_rooms:
+            participants = room.get("participants") or []
+            room_id_str = str(room.get("_id"))
+            for participant in participants:
+                if participant == user_id:
+                    continue
+                try:
+                    participant_sids = await redis.smembers(user_sids_key(participant))
+                except Exception:
+                    participant_sids = set()
+                if not participant_sids:
+                    continue
+                for participant_sid in list(participant_sids):
+                    try:
+                        await sio.emit(
+                            "user_public_key",
+                            {
+                                "user_id": user_id,
+                                "public_key": public_key,
+                                "room_id": room_id_str,
+                            },
+                            to=participant_sid,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "emit user_public_key failed",
+                            extra={
+                                "json_fields": {
+                                    "user_id": user_id,
+                                    "participant": participant,
+                                    "room_id": room_id_str,
+                                    "operation": "broadcast_user_public_key_emit",
+                                },
+                                "labels": {"component": "chat_keys"},
+                            },
+                        )
+        logger.info(
+            "Broadcasted user public key to participants",
+            extra={
+                "json_fields": {
+                    "user_id": user_id,
+                    "operation": "broadcast_user_public_key",
+                },
+                "labels": {"component": "chat_keys"},
+            },
+        )
+    except Exception:
+        logger.exception(
+            "Failed to broadcast user public key",
+            extra={
+                "json_fields": {
+                    "user_id": user_id,
+                    "operation": "broadcast_user_public_key_error",
+                },
+                "labels": {"component": "chat_keys"},
+            },
+        )
+
+
 async def delayed_send_chat_notification(
-    user_id: str, message: str, room_id: str, message_title: str, encrypted_content: str = None, nonce: str = None
+    user_id: str,
+    message: str,
+    room_id: str,
+    message_title: str,
+    encrypted_content: str = None,
+    nonce: str = None,
 ):
     try:
         await asyncio.sleep(3)
@@ -68,12 +154,18 @@ async def delayed_send_chat_notification(
             notification_data["encryptedContent"] = encrypted_content
             notification_data["nonce"] = nonce
         await send_notification(user_id, message_title, message, data=notification_data)
-        await mongo.notifications.insert_one({"user_id": user_id, "timestamp": datetime.utcnow()})
+        await mongo.notifications.insert_one(
+            {"user_id": user_id, "timestamp": datetime.utcnow()}
+        )
     except asyncio.CancelledError:
         logger.debug(
             "Notification task cancelled",
             extra={
-                "json_fields": {"user_id": user_id, "room_id": room_id, "operation": "delayed_send_chat_notification_cancelled"},
+                "json_fields": {
+                    "user_id": user_id,
+                    "room_id": room_id,
+                    "operation": "delayed_send_chat_notification_cancelled",
+                },
                 "labels": {"component": "chat_notifications"},
             },
         )
@@ -82,7 +174,11 @@ async def delayed_send_chat_notification(
         logger.exception(
             "Error sending delayed notification",
             extra={
-                "json_fields": {"user_id": user_id, "room_id": room_id, "operation": "delayed_send_chat_notification_error"},
+                "json_fields": {
+                    "user_id": user_id,
+                    "room_id": room_id,
+                    "operation": "delayed_send_chat_notification_error",
+                },
                 "labels": {"component": "chat_notifications"},
             },
         )
@@ -91,12 +187,21 @@ async def delayed_send_chat_notification(
 
 
 async def send_chat_notification(
-    user_id: str, message: str, room_id: str, message_title: str, encrypted_content: str = None, nonce: str = None
+    user_id: str,
+    message: str,
+    room_id: str,
+    message_title: str,
+    encrypted_content: str = None,
+    nonce: str = None,
 ):
     logger.info(
         "Queueing notification",
         extra={
-            "json_fields": {"user_id": user_id, "room_id": room_id, "operation": "queue_chat_notification"},
+            "json_fields": {
+                "user_id": user_id,
+                "room_id": room_id,
+                "operation": "queue_chat_notification",
+            },
             "labels": {"component": "chat_notifications"},
         },
     )
@@ -110,7 +215,9 @@ async def send_chat_notification(
             pass
 
     task = asyncio.create_task(
-        delayed_send_chat_notification(user_id, message, room_id, message_title, encrypted_content, nonce)
+        delayed_send_chat_notification(
+            user_id, message, room_id, message_title, encrypted_content, nonce
+        )
     )
     notification_queue[user_id] = task
 
@@ -127,6 +234,10 @@ async def connect(sid: str, environ: dict, auth) -> None:
         return
 
     redis = get_async_redis_client()
+
+    # Join stable per-user and per-device rooms for cross-instance emits
+    await sio.enter_room(sid, f"user:{user_id}")
+    await sio.enter_room(sid, f"device:{device_id}")
 
     # Cache user info with TTL for fast metadata lookups
     user_info = await mongo.users.find_one({"external_user_id": user_id})
@@ -152,7 +263,9 @@ async def connect(sid: str, environ: dict, auth) -> None:
     user_sids_key_name = user_sids_key(user_id)
     try:
         _prev_device, sids = await redis.eval(
-            DEVICE_SWAP_LUA, keys=[active_device_key, user_sids_key_name], args=[device_id]
+            DEVICE_SWAP_LUA,
+            keys=[active_device_key, user_sids_key_name],
+            args=[device_id],
         )
     except Exception:
         # fallback to simple set
@@ -165,12 +278,17 @@ async def connect(sid: str, environ: dict, auth) -> None:
         existing_device = await redis.get(sid_device_key(existing_sid))
         if existing_device and existing_device != device_id:
             try:
-                await sio.emit("force_logout", {"reason": "new_device_login"}, to=existing_sid)
+                await sio.emit(
+                    "force_logout", {"reason": "new_device_login"}, to=existing_sid
+                )
             except Exception:
                 logger.debug(
                     "emit force_logout failed",
                     extra={
-                        "json_fields": {"sid": existing_sid, "operation": "force_logout_emit"},
+                        "json_fields": {
+                            "sid": existing_sid,
+                            "operation": "force_logout_emit",
+                        },
                         "labels": {"component": "chat_connect"},
                     },
                 )
@@ -180,7 +298,10 @@ async def connect(sid: str, environ: dict, auth) -> None:
                 logger.debug(
                     "disconnect failed",
                     extra={
-                        "json_fields": {"sid": existing_sid, "operation": "force_logout_disconnect"},
+                        "json_fields": {
+                            "sid": existing_sid,
+                            "operation": "force_logout_disconnect",
+                        },
                         "labels": {"component": "chat_connect"},
                     },
                 )
@@ -195,6 +316,8 @@ async def connect(sid: str, environ: dict, auth) -> None:
 
     if user_public_key:
         await redis.set(f"user_public_key:{user_id}", user_public_key)
+        # Proactively notify participants in the user's chat rooms of the updated key
+        await broadcast_user_public_key(user_id, user_public_key)
 
 
 @sio.event
@@ -229,7 +352,11 @@ async def heartbeat(sid: str) -> None:
         logger.info(
             "Heartbeat",
             extra={
-                "json_fields": {"sid": sid, "user_id": user_id or "", "operation": "heartbeat"},
+                "json_fields": {
+                    "sid": sid,
+                    "user_id": user_id or "",
+                    "operation": "heartbeat",
+                },
                 "labels": {"component": "chat_connect"},
             },
         )
@@ -257,39 +384,38 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
     redis = get_async_redis_client()
     sender = await redis.get(sid_user_key(sid))
     # Recipient is online - forward the encrypted message
-    recipient_sids = await redis.smembers(user_sids_key(recipient))
-    if recipient_sids:
+    is_online = bool(await redis.scard(user_sids_key(recipient)))
+    if is_online:
         # Get sender info from cache (fallback to empty strings)
         sender_info = await redis.hgetall(user_info_key(sender)) if sender else {}
         sender_username = sender_info.get("user_username", "")
         sender_profile_picture = sender_info.get("user_profile_picture", "")
-        for recipient_sid in list(recipient_sids):
-            await sio.emit(
-                "private_message",
-                {
-                    "sender": sender,
-                    "sender_username": sender_username,
-                    "sender_profile_picture": sender_profile_picture,
-                    "encrypted_content": encrypted_content,
-                    "nonce": nonce,
-                    "room_id": room_id,
-                    "temporary_id": temporary_id,
-                },
-                to=recipient_sid,
-            )
-            
+        await sio.emit(
+            "private_message",
+            {
+                "sender": sender,
+                "sender_username": sender_username,
+                "sender_profile_picture": sender_profile_picture,
+                "encrypted_content": encrypted_content,
+                "nonce": nonce,
+                "room_id": room_id,
+                "temporary_id": temporary_id,
+            },
+            room=f"user:{recipient}",
+        )
+
     else:
         # Recipient is offline - send notification with encrypted content
         message_title = (await mongo.users.find_one({"external_user_id": sender}))[
             "username"
         ] or "Ment"
         await send_chat_notification(
-            recipient, 
-            "ახალი შეტყობინება", 
-            room_id, 
-            message_title, 
-            encrypted_content, 
-            nonce
+            recipient,
+            "ახალი შეტყობინება",
+            room_id,
+            message_title,
+            encrypted_content,
+            nonce,
         )
 
     await mongo.chat_messages.insert_one(
@@ -310,18 +436,17 @@ async def notify_single_message_seen(sid: str, data: Dict[str, str]) -> None:
     temporary_id = data["temporary_id"]
     redis = get_async_redis_client()
     sender = await redis.get(sid_user_key(sid))
-    recipient_sids = await redis.smembers(user_sids_key(recipient))
-    if recipient_sids:
-        for recipient_sid in list(recipient_sids):
-            await sio.emit(
-                "notify_single_message_seen",
-                {
-                    "sender": sender,
-                    "message_state": MessageState.READ,
-                    "temporary_id": temporary_id,
-                },
-                to=recipient_sid,
-            )
+    is_online = bool(await redis.scard(user_sids_key(recipient)))
+    if is_online:
+        await sio.emit(
+            "notify_single_message_seen",
+            {
+                "sender": sender,
+                "message_state": MessageState.READ,
+                "temporary_id": temporary_id,
+            },
+            room=f"user:{recipient}",
+        )
 
 
 @sio.event
@@ -574,7 +699,9 @@ async def create_chat_room(
             await redis.set(redis_key, create_request.user_public_key)
 
             # Try to get target user's public key
-            target_key = await redis.get(f"user_public_key:{create_request.target_user_id}")
+            target_key = await redis.get(
+                f"user_public_key:{create_request.target_user_id}"
+            )
             target_public_key = target_key if target_key else None
 
             if existing_room:
@@ -657,7 +784,11 @@ async def send_public_key(request: SendPublicKeyRequest):
                 if existing_device and existing_device != request.device_id:
                     print(f"force_logout {existing_sid}")
                     try:
-                        await sio.emit("force_logout", {"reason": "new_device_login"}, to=existing_sid)
+                        await sio.emit(
+                            "force_logout",
+                            {"reason": "new_device_login"},
+                            to=existing_sid,
+                        )
                     except Exception:
                         pass
                     await sio.disconnect(existing_sid)
@@ -668,6 +799,21 @@ async def send_public_key(request: SendPublicKeyRequest):
             # Best-effort cleanup
             pass
 
+    # Notify participants in all chat rooms for this user that the key was updated
+    try:
+        await broadcast_user_public_key(request.user_id, request.public_key)
+    except Exception:
+        # Do not fail the request on notification errors
+        logger.debug(
+            "broadcast_user_public_key failed after send_public_key",
+            extra={
+                "json_fields": {
+                    "user_id": request.user_id,
+                    "operation": "send_public_key_broadcast",
+                },
+                "labels": {"component": "chat_keys"},
+            },
+        )
 
     return {"success": True}
 
@@ -702,10 +848,12 @@ async def get_chat_room(
     target_key = await redis.get(f"user_public_key:{target_user['external_user_id']}")
     target_public_key = target_key if target_key else None
 
-    is_friend = await mongo.friendships.find_one({
-        "user_id": external_user_id,
-        "friend_id": target_user["external_user_id"],
-    })
+    is_friend = await mongo.friendships.find_one(
+        {
+            "user_id": external_user_id,
+            "friend_id": target_user["external_user_id"],
+        }
+    )
 
     return ChatRoom(
         id=str(chat_room["_id"]),
@@ -771,6 +919,7 @@ async def get_chat_room(
 #         return posts[0]
 #     return None
 
+
 class PublicKeyEntry(BaseModel):
     user_id: str
     username: Optional[str] = None
@@ -787,32 +936,34 @@ class PublicKeysResponse(BaseModel):
 @router.get("/public-keys", response_model=PublicKeysResponse)
 async def list_public_keys() -> PublicKeysResponse:
     redis = get_async_redis_client()
-    
+
     # Get all user_public_key:* keys first
     key_names = await redis.keys("user_public_key:*")
-    
+
     if not key_names:
         return PublicKeysResponse(keys=[])
-    
+
     # Extract user_ids and build all keys we need to fetch
     user_ids = [key_name.split(":", 1)[1] for key_name in key_names]
-    
+
     # Fetch usernames for these users from Mongo in a single query
     users = await mongo.users.find_all({"external_user_id": {"$in": user_ids}})
     user_map = {u["external_user_id"]: u for u in users}
-    
+
     # Build list of all keys to fetch in one mget call
     all_keys = []
     for user_id in user_ids:
-        all_keys.extend([
-            f"user_public_key:{user_id}",
-            f"user_public_key_timestamp:{user_id}",
-            f"user_active_device:{user_id}"
-        ])
-    
+        all_keys.extend(
+            [
+                f"user_public_key:{user_id}",
+                f"user_public_key_timestamp:{user_id}",
+                f"user_active_device:{user_id}",
+            ]
+        )
+
     # Fetch all values in one Redis call
     all_values = await redis.mget(all_keys)
-    
+
     # Check connection status for all users
     connection_status = {}
     for user_id in user_ids:
@@ -821,7 +972,7 @@ async def list_public_keys() -> PublicKeysResponse:
             connection_status[user_id] = is_connected
         except Exception:
             connection_status[user_id] = False
-    
+
     # Parse results and build entries
     entries: List[PublicKeyEntry] = []
     for i, user_id in enumerate(user_ids):
@@ -831,7 +982,7 @@ async def list_public_keys() -> PublicKeysResponse:
         timestamp = all_values[base_index + 1]
         active_device_id = all_values[base_index + 2]
         username = (user_map.get(user_id) or {}).get("username")
-        
+
         entries.append(
             PublicKeyEntry(
                 user_id=user_id,
@@ -842,32 +993,28 @@ async def list_public_keys() -> PublicKeysResponse:
                 is_connected=connection_status.get(user_id, False),
             )
         )
-    
+
     # Sort entries by timestamp (most recent first)
-    entries.sort(
-        key=lambda entry: entry.timestamp or "",
-        reverse=True
-    )
-    
+    entries.sort(key=lambda entry: entry.timestamp or "", reverse=True)
+
     return PublicKeysResponse(keys=entries)
+
 
 @router.get("/public-keys/ui", response_class=HTMLResponse)
 async def public_keys_ui() -> HTMLResponse:
     data = await list_public_keys()
-    
+
     # Sort entries by timestamp (most recent first)
     sorted_entries = sorted(
-        data.keys,
-        key=lambda entry: entry.timestamp or "",
-        reverse=True
+        data.keys, key=lambda entry: entry.timestamp or "", reverse=True
     )
-    
+
     # Simple HTML table
     rows = "".join(
         f"<tr>"
         f"<td>{entry.user_id}</td>"
         f"<td>{entry.username or ''}</td>"
-        f"<td><code style='font-size:12px'>{(entry.public_key or '')[:32]}..." \
+        f"<td><code style='font-size:12px'>{(entry.public_key or '')[:32]}..."
         f"</code></td>"
         f"<td>{entry.timestamp or ''}</td>"
         f"<td>{entry.active_device_id or ''}</td>"
@@ -908,4 +1055,3 @@ async def public_keys_ui() -> HTMLResponse:
     </html>
     """
     return HTMLResponse(content=html)
-
