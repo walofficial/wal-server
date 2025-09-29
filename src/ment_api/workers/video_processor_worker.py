@@ -7,13 +7,14 @@ import time
 import yt_dlp
 from bson import ObjectId
 from google.pubsub_v1 import ReceivedMessage
-
 from langfuse import observe
+
 from ment_api.common.custom_object_id import CustomObjectId
 from ment_api.events.video_processor_event import VideoProcessorEvent
 from ment_api.persistence import mongo
 from ment_api.services.gcs_service import build_audio_blob_path, upload_file_to_gcs
 from ment_api.services.google_storage_service import build_gcs_uri, check_blob_exists
+from ment_api.services.news_service import publish_check_fact
 from ment_api.services.notification_service import send_notification
 from ment_api.services.verification_service import find_processed_youtube_id
 from ment_api.services.video_processing_service import (
@@ -23,7 +24,6 @@ from ment_api.services.video_processing_service import (
 from ment_api.services.youtube_utils import (
     get_youtube_info_async,
 )
-from ment_api.services.news_service import publish_check_fact
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ GCS_BUCKET_NAME = "ment-verification"
 # -----------------------------------------------------------
 
 # Maximum duration in seconds for video processing
-MAX_VIDEO_DURATION = 4000  # ~30 minutes in seconds
+MAX_VIDEO_DURATION = 6000  # ~30 minutes in seconds
 
 # Maximum timeout for the entire video processing callback (10 minutes)
 CALLBACK_TIMEOUT = 600  # 10 minutes in seconds
@@ -212,7 +212,7 @@ async def process_video(
     ai_summary = await generate_summary_from_transcript(
         transcript=transcript,
         video_title=video_title,
-    )   
+    )
     # Update the verification document with the AI summary
     update_result = await mongo.verifications.update_one(
         {"_id": verification_id},
