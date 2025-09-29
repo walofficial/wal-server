@@ -178,3 +178,4 @@ data
 service_account.json
 
 .DS_Store
+*.code-workspace
