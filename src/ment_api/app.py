@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 
 import jwt
 import socketio
@@ -87,6 +88,7 @@ class SupabaseAuthMiddleware(BaseHTTPMiddleware):
                 if k.strip()
             ]
             if x_api_key not in allowed_api_keys:
+                logging.error("Invalid or missing API key")
                 return JSONResponse(
                     {"detail": "Invalid or missing authorization token"},
                     status_code=401,
@@ -103,7 +105,8 @@ class SupabaseAuthMiddleware(BaseHTTPMiddleware):
             )
             # Add the user ID to the request state
             request.state.supabase_user_id = decoded_token["sub"]
-        except jwt.InvalidTokenError:
+        except jwt.InvalidTokenError as e:
+            logging.error(e)
             # Try API key auth as fallback
             x_api_key = request.headers.get("x-api-key") or "unknown"
             allowed_api_keys = [
@@ -118,7 +121,7 @@ class SupabaseAuthMiddleware(BaseHTTPMiddleware):
                 )
             return await call_next(request)
         except Exception as e:
-            logging.error(f"Auth error: {str(e)[:100]}")
+            logging.error(e)
             return JSONResponse(
                 {"detail": "Authentication error"},
                 status_code=401,
@@ -159,8 +162,9 @@ class GetCountryResponse(BaseModel):
     country_label: str
     ip_address: str
     detection_method: str
-    news_feed_id: str
-    fact_check_feed_id: str
+    ## If it's None It means feeds aren't supported for this country
+    news_feed_id: Optional[str] = None
+    fact_check_feed_id: Optional[str] = None
 
 
 @app.get("/get-country", operation_id="get_country", response_model=GetCountryResponse)
