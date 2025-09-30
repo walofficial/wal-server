@@ -61,7 +61,7 @@ def _get_ip_detection_method(request: Request, detected_ip: str) -> str:
         return "request.client.host"
 
 
-def get_country_for_request(request: Request) -> Tuple[str, str, str]:
+def get_country_for_request(request: Request) -> Tuple[str, str, str, str]:
     """
     Returns a tuple of (country_code, ip_address, detection_method).
     Falls back to ("GE", ip, method) in case of errors or missing IP data.
@@ -72,12 +72,15 @@ def get_country_for_request(request: Request) -> Tuple[str, str, str]:
     if ip in ["127.0.0.1", "::1", None]:
         ip = "8.8.8.8"
 
+    country_label = "Georgia"
+
     try:
         response = _geoip_reader.country(ip)
         country_code = response.country.iso_code or "GE"
+        country_label = response.country.names["en"] or "Georgia"
     except Exception:
         country_code = "GE"
     logging.info(
-        f"Country code: {country_code}, IP: {ip}, Detection method: {_get_ip_detection_method(request, ip)}"
+        f"Country code: {country_code}, Country label: {country_label}, IP: {ip}, Detection method: {_get_ip_detection_method(request, ip)}"
     )
-    return country_code, ip, _get_ip_detection_method(request, ip)
+    return country_code, country_label, ip, _get_ip_detection_method(request, ip)

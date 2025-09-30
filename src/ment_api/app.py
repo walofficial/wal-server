@@ -11,6 +11,8 @@ from starlette.responses import JSONResponse
 from ment_api.configurations.config import settings
 from ment_api.configurations.health_check_config import setup_health_checks
 from ment_api.lifespan import lifespan
+from ment_api.models.feed import Feed
+from ment_api.persistence import mongo
 from ment_api.routes import (
     comments,
     feed,
@@ -50,14 +52,18 @@ class SupabaseAuthMiddleware(BaseHTTPMiddleware):
         request.state.is_anonymous = x_anonymous_header == "true"
 
         # Public endpoints allowlist (GET only)
-        is_public_get = method == "GET" or method == "POST" and (
-            path == "/user/get-verification"
-            or path.startswith("/user/feed/location-feed/")
-            or path.startswith("/live-actions/verification-likes/")
-            or path.startswith("/live-actions/get-impressions/")
-            or path.startswith("/get-country")
-            or path.startswith("/live/webhook")
-            or path.startswith("/health")
+        is_public_get = (
+            method == "GET"
+            or method == "POST"
+            and (
+                path == "/user/get-verification"
+                or path.startswith("/user/feed/location-feed/")
+                or path.startswith("/live-actions/verification-likes/")
+                or path.startswith("/live-actions/get-impressions/")
+                or path.startswith("/get-country")
+                or path.startswith("/live/webhook")
+                or path.startswith("/health")
+            )
         )
 
         if is_public_get and (not auth_header or not auth_header.startswith("Bearer ")):
@@ -150,15 +156,36 @@ app.include_router(reactions.router)
 
 class GetCountryResponse(BaseModel):
     country_code: str
+    country_label: str
     ip_address: str
     detection_method: str
+    news_feed_id: str
+    fact_check_feed_id: str
 
 
 @app.get("/get-country", operation_id="get_country", response_model=GetCountryResponse)
 async def get_country(request: Request):
-    country_code, ip, method = get_country_for_request(request)
+    country_code, country_label, ip, method = get_country_for_request(request)
+    feed_ids = await mongo.feeds.find_all(
+        {
+            "feed_country_code": country_code,
+            "feed_type": {"$in": ["news", "fact_check"]},
+        }
+    )
+    feed_ids = [Feed(**feed) for feed in feed_ids]
+    news_feed_id = None
+    fact_check_feed_id = None
+    for feed2 in feed_ids:
+        if feed2.feed_type == "news":
+            news_feed_id = str(feed2.id)
+        elif feed2.feed_type == "fact_check":
+            fact_check_feed_id = str(feed2.id)
+
     return GetCountryResponse(
+        news_feed_id=news_feed_id,
+        fact_check_feed_id=fact_check_feed_id,
         country_code=country_code,
+        country_label=country_label,
         ip_address=ip,
         detection_method=method,
     )

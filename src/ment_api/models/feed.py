@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -12,11 +12,9 @@ class Feed(BaseModel):
     display_name: str
     feed_location: Optional[dict] = None
     feed_locations: Optional[List[dict]] = Field(default=[])
-    feed_description: Optional[str] = ""
     hidden: Optional[bool] = False
-    live_user_count: Optional[int] = 0
-    verification_count: Optional[int] = 0
     no_restrictions: Optional[bool] = False
-    feed_language_code: Optional[str] = "ka"
+    feed_country_code: Optional[str] = "ka"
     # Means user should be near this location to be returned
     nearby_feed: Optional[bool] = False
+    feed_type: Optional[Literal["news", "fact_check", "location"]] = "news"
