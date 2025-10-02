@@ -15,6 +15,9 @@ from ment_api.models.location_feed_post import (
 )
 from ment_api.persistence import mongo, mongo_client
 from ment_api.persistence.mongo import create_translation_projection
+from ment_api.services.a2a_fact_check_service import (
+    check_fact as a2a_check_fact,
+)
 from ment_api.services.external_clients.cloud_vision_client import (
     get_cloud_vision_client,
 )
@@ -31,13 +34,10 @@ from ment_api.services.external_clients.models.vision_models import (
     OCRResponse,
     TextExtractRequest,
 )
-from ment_api.services.a2a_fact_check_service import (
-    check_fact as a2a_check_fact,
-)
 from ment_api.services.notification_service import send_notification
 from ment_api.services.score_generator_service import generate_score
 from ment_api.services.score_validity_service import calculate_valid_until_logarithmic
-from ment_api.services.translation_service import publish_translation_request
+from ment_api.services.translation_service import translate_verification_fields
 
 logger = logging.getLogger(__name__)
 
@@ -573,7 +573,7 @@ async def check_fact(
         )
         try:
             fact_check_data = await a2a_check_fact(jina_request)
-            
+
             if fact_check_data:
                 logger.info(
                     "A2A fact check completed successfully",
@@ -652,7 +652,9 @@ async def check_fact(
                     {"_id": verification_id},
                     {"$set": {"is_public": False}},
                 )
-            verification_span.update(output={"status": "FAILED", "reason": "A2A fact check failed"})
+            verification_span.update(
+                output={"status": "FAILED", "reason": "A2A fact check failed"}
+            )
             return None
         has_low_references = len(fact_check_data.references) < 3
         if has_low_references:
@@ -666,8 +668,8 @@ async def check_fact(
                 },
             )
             await mongo.verifications.delete_one(
-                    {"_id": verification_id},
-                )
+                {"_id": verification_id},
+            )
             verification_span.update(
                 output={"status": "FAILED", "reason": "fact checked but low sources"}
             )
@@ -725,30 +727,19 @@ async def check_fact(
             },
         )
 
-        # Trigger translation after successful fact check completion
-        try:
-            await publish_translation_request(verification_id)
-        except Exception as e:
-            logger.error(
-                "Failed to publish translation request",
-                extra={
-                    "json_fields": {
-                        "verification_id": str(verification_id),
-                        "error": str(e),
-                        "error_type": type(e).__name__,
-                        "base_operation": "fact_check",
-                        "operation": "fact_check_translation_error",
-                    },
-                    "labels": {"component": "fact_check_service", "severity": "medium"},
-                },
-            )
-
+        await translate_verification_fields(verification_id)
+        updated_verification = await mongo.verifications.find_one(
+            {"_id": verification_id}
+        )
+        notification_reason = updated_verification.get("fact_check_data", {}).get(
+            "reason_summary"
+        )
         # Send notification that fact checking is completed
         if not verification.get("is_generated_news"):
             await send_notification(
                 verification.get("assignee_user_id"),
                 "ფაქტ ჩეკი დასრულდა",
-                f"{fact_check_data.reason_summary}",
+                f"{notification_reason}",
                 data={
                     "type": "fact_check_completed",
                     "verificationId": str(verification_id),
