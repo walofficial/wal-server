@@ -197,7 +197,7 @@ async def get_country(request: Request):
 
 def get_ip_detection_method(request: Request, detected_ip: str) -> str:
     # Backward-compat shim: delegate to country_service for consistent naming
-    _, _, method = get_country_for_request(request)
+    _, _, _, method = get_country_for_request(request)
     return method
 
 

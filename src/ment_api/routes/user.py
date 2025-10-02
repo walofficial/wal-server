@@ -56,7 +56,7 @@ async def create_user(request: CreateUserRequest, http_request: Request):
     try:
         from ment_api.services.country_service import get_country_for_request
 
-        country_code, _, _ = get_country_for_request(http_request)
+        country_code, _, _, _ = get_country_for_request(http_request)
 
         update_fields = {}
         if country_code == "US":
@@ -619,8 +619,7 @@ async def check_registered_users(
 async def block(
     request: Request,
     target_id: Annotated[str, Path()],
-    redis = Depends(get_async_redis_client),
-
+    redis=Depends(get_async_redis_client),
 ):
     external_user_id = request.state.supabase_user_id
     target_id_str = str(target_id)
@@ -663,8 +662,7 @@ async def block(
 async def unblock(
     request: Request,
     target_id: str,
-    redis = Depends(get_async_redis_client),
-
+    redis=Depends(get_async_redis_client),
 ):
     external_user_id = request.state.supabase_user_id
     target_id_str = target_id
@@ -733,7 +731,7 @@ async def check_username(username: str):
 async def get_user_profile(
     user_id: str,
     request: Request,
-    redis = Depends(get_async_redis_client),
+    redis=Depends(get_async_redis_client),
 ):
     external_user_id = request.state.supabase_user_id
     # Get user data and run other queries in parallel
@@ -786,13 +784,13 @@ async def get_user_profile(
         user_id=str(user_id),
     )
 
+
 @router.get(
     "/profile/username/{username}",
     response_model=User | None,
     operation_id="get_user_profile_by_username",
 )
 async def get_user_profile_by_username(username: str):
-
     pipeline = [
         {
             "$search": {
