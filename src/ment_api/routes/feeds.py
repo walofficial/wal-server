@@ -5,7 +5,7 @@ import re
 import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Dict, List, Optional, Tuple
+from typing import Annotated, Dict, List, Optional
 
 from bson.objectid import ObjectId
 from fastapi import (
@@ -316,6 +316,62 @@ async def _fetch_youtube_metadata_and_process_in_background(
             )
 
 
+async def _upsert_live_user_presence(
+    feed_id: CustomObjectId, external_user_id: str
+) -> None:
+    """Upsert the caller into live_users for the given feed and invalidate cached counts.
+
+    Runs as a fire-and-forget task from request handlers to avoid blocking responses.
+    """
+    from ment_api.services.redis_service import get_async_redis_client
+
+    try:
+        expiration_date = datetime.now(timezone.utc) + timedelta(hours=12)
+
+        await mongo.live_users.update_one(
+            {"author_id": external_user_id, "feed_id": feed_id},
+            {
+                "$set": {"expiration_date": expiration_date},
+                "$setOnInsert": {"created_at": datetime.now(timezone.utc)},
+            },
+            upsert=True,
+        )
+
+        print(
+            f"Live user presence upserted for feed {feed_id} and user {external_user_id}"
+        )
+
+        # Invalidate cached live users count for this feed
+        redis = get_async_redis_client()
+        await redis.delete(f"live_users_count:{feed_id}")
+
+        logger.info(
+            "Live user presence upserted",
+            extra={
+                "json_fields": {
+                    "feed_id": str(feed_id),
+                    "user_id": external_user_id,
+                    "operation": "upsert_live_user_presence",
+                },
+                "labels": {"component": "feeds"},
+            },
+        )
+    except Exception as e:
+        logger.error(
+            "Failed to upsert live user presence",
+            extra={
+                "json_fields": {
+                    "feed_id": str(feed_id),
+                    "user_id": external_user_id,
+                    "error_message": str(e),
+                    "operation": "upsert_live_user_presence_failed",
+                },
+                "labels": {"component": "feeds"},
+            },
+            exc_info=True,
+        )
+
+
 # Add this helper function near the top of the file
 def get_location_feeds_pipeline(category_id: CustomObjectId):
     """Common pipeline for getting tasks with live user and verification counts"""
@@ -358,6 +414,7 @@ async def get_location_feeds(
     ignore_location_check: Annotated[bool, Query()] = False,
 ):
     user_location = (x_user_location_latitude, x_user_location_longitude)
+    external_user_id: Optional[str] = getattr(request.state, "supabase_user_id", None)
     # TODO: remove category id from the FE and also the from BE. it should just be country id based on the user selected region or ip.
     feeds = await mongo.feeds.aggregate(get_location_feeds_pipeline(category_id))
     feeds = list(feeds)

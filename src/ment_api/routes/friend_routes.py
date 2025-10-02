@@ -1,21 +1,23 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from typing import List, Annotated
+import asyncio
 from datetime import datetime, timezone
+from typing import Annotated, List
 
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 from redis import Redis
-from ment_api.persistence import mongo
+
 from ment_api.common.custom_object_id import CustomObjectId
-from ment_api.models.friend_request import FriendRequest, FriendRequestStatus
+from ment_api.models.friend_request import (
+    FriendRequest,
+    FriendRequestSent,
+    FriendRequestStatus,
+)
 from ment_api.models.user import User
-from ment_api.models.friend_request import FriendRequestSent
+from ment_api.persistence import mongo
 from ment_api.services.notification_service import (
     send_notification,
 )  # Import the notification service
-
-import asyncio
-
 from ment_api.services.redis_service import get_async_redis_client
-from pydantic import BaseModel
 
 router = APIRouter(
     prefix="/friends",
@@ -111,7 +113,7 @@ async def get_friend_requests(request: Request):
             "status": FriendRequestStatus.PENDING,
         }
     )
-
+    print(requests)
     # Get unique user IDs from requests
     user_ids = set()
     for request in requests:
@@ -123,7 +125,6 @@ async def get_friend_requests(request: Request):
     users = await mongo.users.find_all({"external_user_id": {"$in": list(user_ids)}})
     requests_future = [FriendRequest(**request) for request in requests]
     # Wait for both operations to complete
-
     # Create a dictionary of users for easy lookup
     users_dict = {str(user["external_user_id"]): User(**user) for user in users}
 
@@ -138,7 +139,7 @@ async def get_friend_requests(request: Request):
         # Check if the user exists in the users_dict because it might not be if current user
         if other_user_id in users_dict:
             result.append({"user": users_dict.get(other_user_id), "request": request})
-
+    print(result)
     return result
 
 
@@ -197,7 +198,10 @@ async def accept_friend_request(
             sender["_id"],
             "მეგობრები ხართ",
             notification_message,
-            {"type": "friend_request_accepted", "friend_id": str(receiver["external_user_id"])},
+            {
+                "type": "friend_request_accepted",
+                "friend_id": str(receiver["external_user_id"]),
+            },
         )
 
     return {"message": "Friend request accepted"}
