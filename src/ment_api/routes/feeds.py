@@ -407,6 +407,7 @@ router = APIRouter(
     responses={500: {"description": "Generation error"}},
 )
 async def get_location_feeds(
+    request: Request,
     category_id: Annotated[CustomObjectId, Query()],
     # antartica coordinates as default
     x_user_location_latitude: Annotated[float, Header(...)] = -77.85,
@@ -438,6 +439,11 @@ async def get_location_feeds(
                 is_at_location, nearest_location = False, None
 
             if is_at_location:
+                # Fire-and-forget presence upsert for the current user on this feed
+                if external_user_id:
+                    asyncio.create_task(
+                        _upsert_live_user_presence(feed_obj.id, external_user_id)
+                    )
                 feeds_at_location.append(feed_obj)
             else:
                 # Hide feeds marked as nearby-only when user is not at the location
