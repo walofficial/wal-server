@@ -113,7 +113,6 @@ async def get_friend_requests(request: Request):
             "status": FriendRequestStatus.PENDING,
         }
     )
-    print(requests)
     # Get unique user IDs from requests
     user_ids = set()
     for request in requests:
@@ -139,7 +138,6 @@ async def get_friend_requests(request: Request):
         # Check if the user exists in the users_dict because it might not be if current user
         if other_user_id in users_dict:
             result.append({"user": users_dict.get(other_user_id), "request": request})
-    print(result)
     return result
 
 

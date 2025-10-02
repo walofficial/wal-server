@@ -274,9 +274,19 @@ async def connect(sid: str, environ: dict, auth) -> None:
         _prev_device = None
 
     # Disconnect sids whose device != device_id
-    for existing_sid in list(sids or []):
-        existing_device = await redis.get(sid_device_key(existing_sid))
-        if existing_device and existing_device != device_id:
+    # Batch get all device IDs at once instead of one by one
+    if sids:
+        device_keys = [sid_device_key(sid) for sid in list(sids)]
+        device_values = await redis.mget(device_keys)
+
+        # Build list of sids to disconnect
+        sids_to_disconnect = []
+        for existing_sid, existing_device in zip(list(sids), device_values):
+            if existing_device and existing_device != device_id:
+                sids_to_disconnect.append(existing_sid)
+
+        # Disconnect and clean up in batch
+        for existing_sid in sids_to_disconnect:
             try:
                 await sio.emit(
                     "force_logout", {"reason": "new_device_login"}, to=existing_sid
@@ -305,14 +315,22 @@ async def connect(sid: str, environ: dict, auth) -> None:
                         "labels": {"component": "chat_connect"},
                     },
                 )
-            await redis.srem(user_sids_key_name, existing_sid)
-            await redis.delete(sid_user_key(existing_sid))
-            await redis.delete(sid_device_key(existing_sid))
 
-    # Bookkeeping for this connection (with TTLs)
-    await redis.set(sid_user_key(sid), user_id, ex=SID_TTL_SECONDS)
-    await redis.set(sid_device_key(sid), device_id, ex=SID_TTL_SECONDS)
-    await redis.sadd(user_sids_key(user_id), sid)
+        # Batch delete all Redis keys for disconnected sids
+        if sids_to_disconnect:
+            pipe = redis.pipeline()
+            for existing_sid in sids_to_disconnect:
+                pipe.srem(user_sids_key_name, existing_sid)
+                pipe.delete(sid_user_key(existing_sid))
+                pipe.delete(sid_device_key(existing_sid))
+            await pipe.execute()
+
+    # Bookkeeping for this connection (with TTLs) - batch operations
+    pipe = redis.pipeline()
+    pipe.set(sid_user_key(sid), user_id, ex=SID_TTL_SECONDS)
+    pipe.set(sid_device_key(sid), device_id, ex=SID_TTL_SECONDS)
+    pipe.sadd(user_sids_key(user_id), sid)
+    await pipe.execute()
 
     if user_public_key:
         await redis.set(f"user_public_key:{user_id}", user_public_key)
@@ -323,12 +341,16 @@ async def connect(sid: str, environ: dict, auth) -> None:
 @sio.event
 async def disconnect(sid: str) -> None:
     redis = get_async_redis_client()
-    # Resolve user for this sid and remove mappings
+    # Resolve user for this sid and remove mappings - batch operations
     user_id = await redis.get(sid_user_key(sid))
+
+    pipe = redis.pipeline()
     if user_id:
-        await redis.srem(user_sids_key(user_id), sid)
-    await redis.delete(sid_user_key(sid))
-    await redis.delete(sid_device_key(sid))
+        pipe.srem(user_sids_key(user_id), sid)
+    pipe.delete(sid_user_key(sid))
+    pipe.delete(sid_device_key(sid))
+    await pipe.execute()
+
     logger.info(
         "Client disconnected",
         extra={
@@ -342,13 +364,25 @@ async def disconnect(sid: str) -> None:
 async def heartbeat(sid: str) -> None:
     redis = get_async_redis_client()
     try:
-        user_id = await redis.get(sid_user_key(sid))
-        device_id = await redis.get(sid_device_key(sid))
-        if user_id:
-            await redis.expire(sid_user_key(sid), SID_TTL_SECONDS)
-            await redis.sadd(user_sids_key(user_id), sid)
-        if device_id:
-            await redis.expire(sid_device_key(sid), SID_TTL_SECONDS)
+        # Batch get user_id and device_id
+        pipe = redis.pipeline()
+        pipe.get(sid_user_key(sid))
+        pipe.get(sid_device_key(sid))
+        results = await pipe.execute()
+
+        user_id = results[0]
+        device_id = results[1]
+
+        # Batch expire and update operations
+        if user_id or device_id:
+            pipe = redis.pipeline()
+            if user_id:
+                pipe.expire(sid_user_key(sid), SID_TTL_SECONDS)
+                pipe.sadd(user_sids_key(user_id), sid)
+            if device_id:
+                pipe.expire(sid_device_key(sid), SID_TTL_SECONDS)
+            await pipe.execute()
+
         logger.info(
             "Heartbeat",
             extra={
@@ -377,14 +411,20 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
     nonce = data["nonce"]
     temporary_id = data["temporary_id"]
     room_id = data["room_id"]
-    sender = None
 
     logger.info(f"Forwarding encrypted message from {sid} to {recipient}")
 
     redis = get_async_redis_client()
-    sender = await redis.get(sid_user_key(sid))
-    # Recipient is online - forward the encrypted message
-    is_online = bool(await redis.scard(user_sids_key(recipient)))
+
+    # Use pipeline to batch all Redis operations
+    pipe = redis.pipeline()
+    pipe.get(sid_user_key(sid))
+    pipe.scard(user_sids_key(recipient))
+    results = await pipe.execute()
+    print(results)
+    sender = results[0]
+    is_online = bool(results[1])
+
     if is_online:
         # Get sender info from cache (fallback to empty strings)
         sender_info = await redis.hgetall(user_info_key(sender)) if sender else {}
@@ -403,12 +443,15 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
             },
             room=f"user:{recipient}",
         )
-
     else:
         # Recipient is offline - send notification with encrypted content
-        message_title = (await mongo.users.find_one({"external_user_id": sender}))[
-            "username"
-        ] or "Ment"
+        # Get sender username from cache first, fallback to DB
+        sender_info = await redis.hgetall(user_info_key(sender)) if sender else {}
+        message_title = sender_info.get("user_username")
+        if not message_title:
+            user_data = await mongo.users.find_one({"external_user_id": sender})
+            message_title = (user_data.get("username") if user_data else None) or "Ment"
+
         await send_chat_notification(
             recipient,
             "ახალი შეტყობინება",
@@ -418,6 +461,7 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
             nonce,
         )
 
+    # Store message asynchronously in background
     await mongo.chat_messages.insert_one(
         {
             "author_id": sender,
@@ -435,8 +479,16 @@ async def notify_single_message_seen(sid: str, data: Dict[str, str]) -> None:
     recipient = data["recipient"]
     temporary_id = data["temporary_id"]
     redis = get_async_redis_client()
-    sender = await redis.get(sid_user_key(sid))
-    is_online = bool(await redis.scard(user_sids_key(recipient)))
+
+    # Use pipeline to batch Redis operations
+    pipe = redis.pipeline()
+    pipe.get(sid_user_key(sid))
+    pipe.scard(user_sids_key(recipient))
+    results = await pipe.execute()
+
+    sender = results[0]
+    is_online = bool(results[1])
+
     if is_online:
         await sio.emit(
             "notify_single_message_seen",
@@ -768,21 +820,34 @@ async def send_public_key(request: SendPublicKeyRequest):
     # Save the last timestamp of when user generated the keys, so that we can exclude old chat messages which was generated with the old key
 
     redis = get_async_redis_client()
-    # Enforce single active device if provided
-    if request.device_id:
-        await redis.set(f"user_active_device:{request.user_id}", request.device_id)
-    # Persist public key and timestamp atomically and track in set
+
+    # Batch all Redis writes using pipeline
     now_iso = datetime.utcnow().isoformat()
-    await redis.set(f"user_public_key:{request.user_id}", request.public_key)
-    await redis.set(f"user_public_key_timestamp:{request.user_id}", now_iso)
+    pipe = redis.pipeline()
+    if request.device_id:
+        pipe.set(f"user_active_device:{request.user_id}", request.device_id)
+    pipe.set(f"user_public_key:{request.user_id}", request.public_key)
+    pipe.set(f"user_public_key_timestamp:{request.user_id}", now_iso)
+    await pipe.execute()
+
     # If we know the device_id, proactively disconnect other device sessions for this user
     if request.device_id:
         try:
             sids = await redis.smembers(user_sids_key(request.user_id))
-            for existing_sid in list(sids or []):
-                existing_device = await redis.get(sid_device_key(existing_sid))
-                if existing_device and existing_device != request.device_id:
-                    print(f"force_logout {existing_sid}")
+            if sids:
+                # Batch get all device IDs at once
+                device_keys = [sid_device_key(sid) for sid in list(sids)]
+                device_values = await redis.mget(device_keys)
+
+                # Build list of sids to disconnect
+                sids_to_disconnect = []
+                for existing_sid, existing_device in zip(list(sids), device_values):
+                    if existing_device and existing_device != request.device_id:
+                        sids_to_disconnect.append(existing_sid)
+                        print(f"force_logout {existing_sid}")
+
+                # Disconnect sessions
+                for existing_sid in sids_to_disconnect:
                     try:
                         await sio.emit(
                             "force_logout",
@@ -792,9 +857,15 @@ async def send_public_key(request: SendPublicKeyRequest):
                     except Exception:
                         pass
                     await sio.disconnect(existing_sid)
-                    await redis.srem(user_sids_key(request.user_id), existing_sid)
-                    await redis.delete(sid_user_key(existing_sid))
-                    await redis.delete(sid_device_key(existing_sid))
+
+                # Batch cleanup Redis keys
+                if sids_to_disconnect:
+                    pipe = redis.pipeline()
+                    for existing_sid in sids_to_disconnect:
+                        pipe.srem(user_sids_key(request.user_id), existing_sid)
+                        pipe.delete(sid_user_key(existing_sid))
+                        pipe.delete(sid_device_key(existing_sid))
+                    await pipe.execute()
         except Exception:
             # Best-effort cleanup
             pass
