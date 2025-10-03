@@ -32,7 +32,6 @@ async def get_nearest_locations_for_feeds(
                 "query": {"feed_id": {"$in": feed_ids}},
             }
         },
-        {"$sort": {"distance": 1}},
         {
             "$group": {
                 "_id": "$feed_id",
@@ -42,8 +41,8 @@ async def get_nearest_locations_for_feeds(
                         "address": "$address",
                         "radius": "$radius",
                         "distance": "$distance",
-                        "lat": {"$arrayElemAt": ["$location.coordinates", 0]},
-                        "lng": {"$arrayElemAt": ["$location.coordinates", 1]},
+                        "lat": {"$arrayElemAt": ["$location.coordinates", 1]},
+                        "lng": {"$arrayElemAt": ["$location.coordinates", 0]},
                     }
                 },
                 "inside": {
@@ -57,6 +56,7 @@ async def get_nearest_locations_for_feeds(
                 },
             }
         },
+        {"$sort": {"nearest.distance": 1}},
         {
             "$project": {
                 "feed_id": "$_id",
@@ -66,7 +66,9 @@ async def get_nearest_locations_for_feeds(
             }
         },
     ]
+    print(pipeline)
     results = await mongo.feed_locations.aggregate(pipeline)
+    print(results)
     mapping: Dict[CustomObjectId, Tuple[bool, Optional[Location]]] = {}
 
     for doc in results:
@@ -80,4 +82,5 @@ async def get_nearest_locations_for_feeds(
                 location=(nearest.get("lat", 0.0), nearest.get("lng", 0.0)),
             )
         mapping[feed_id] = (bool(doc.get("inside", 0)), location_obj)
+    print(mapping)
     return mapping
