@@ -32,7 +32,7 @@ GCS_BUCKET_NAME = "ment-verification"
 # -----------------------------------------------------------
 
 # Maximum duration in seconds for video processing
-MAX_VIDEO_DURATION = 6000  # ~30 minutes in seconds
+MAX_VIDEO_DURATION = 7200  # ~30 minutes in seconds
 
 # Maximum timeout for the entire video processing callback (10 minutes)
 CALLBACK_TIMEOUT = 600  # 10 minutes in seconds
