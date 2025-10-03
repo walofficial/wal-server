@@ -421,7 +421,6 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
     pipe.get(sid_user_key(sid))
     pipe.scard(user_sids_key(recipient))
     results = await pipe.execute()
-    print(results)
     sender = results[0]
     is_online = bool(results[1])
 
@@ -677,7 +676,6 @@ async def get_user_chat_rooms(request: Request):
         if target_user_ids:
             redis_keys = [f"user_public_key:{user_id}" for user_id in target_user_ids]
             public_keys = await redis.mget(redis_keys)
-            print(public_keys)
             public_key_map = dict(zip(target_user_ids, public_keys))
         else:
             public_key_map = {}
@@ -734,7 +732,6 @@ async def create_chat_room(
 ):
     external_user_id = request.state.supabase_user_id
     redis = get_async_redis_client()
-    print(create_request)
     async with mongo_client.db.client.start_session() as session:
         async with await session.start_transaction():
             # Check if room already exists with these participants
@@ -844,7 +841,6 @@ async def send_public_key(request: SendPublicKeyRequest):
                 for existing_sid, existing_device in zip(list(sids), device_values):
                     if existing_device and existing_device != request.device_id:
                         sids_to_disconnect.append(existing_sid)
-                        print(f"force_logout {existing_sid}")
 
                 # Disconnect sessions
                 for existing_sid in sids_to_disconnect:
