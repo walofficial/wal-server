@@ -739,7 +739,7 @@ async def check_fact(
             await send_notification(
                 verification.get("assignee_user_id"),
                 "ფაქტ ჩეკი დასრულდა",
-                f"{notification_reason}",
+                f"{notification_reason.get('ka')}",
                 data={
                     "type": "fact_check_completed",
                     "verificationId": str(verification_id),
