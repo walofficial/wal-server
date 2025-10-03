@@ -56,7 +56,6 @@ from ment_api.services.external_clients.scrape_do_client import (
 )
 from ment_api.services.location_service import (
     get_nearest_locations_for_feeds,
-    is_on_feed_location,
 )
 from ment_api.services.news_service import publish_check_fact
 from ment_api.services.notification_service import (
