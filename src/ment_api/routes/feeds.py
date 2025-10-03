@@ -430,9 +430,12 @@ async def get_location_feeds(
         feeds_at_location = [Feed(**feed) for feed in feeds]
     else:
         mapping = await get_nearest_locations_for_feeds(feed_ids, user_location)
-        for feed in feeds:
-            feed_obj = Feed(**feed)
-            result = mapping.get(feed_obj.id)
+        for feed_id in mapping:
+            feed_obj = Feed(
+                **next(feed for feed in feeds if Feed(**feed).id == feed_id)
+            )
+            print(feed_obj)
+            result = mapping.get(feed_id)
             if result:
                 is_at_location, nearest_location = result
             else:
@@ -442,7 +445,7 @@ async def get_location_feeds(
                 # Fire-and-forget presence upsert for the current user on this feed
                 if external_user_id:
                     asyncio.create_task(
-                        _upsert_live_user_presence(feed_obj.id, external_user_id)
+                        _upsert_live_user_presence(feed_id, external_user_id)
                     )
                 feeds_at_location.append(feed_obj)
             else:
@@ -452,7 +455,7 @@ async def get_location_feeds(
                         "Skipping nearby-only feed for off-location user",
                         extra={
                             "json_fields": {
-                                "feed_id": str(feed_obj.id),
+                                "feed_id": str(feed_id),
                                 "nearby_feed": True,
                                 "operation": "filter_nearby_only_feed",
                             },

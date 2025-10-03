@@ -8,73 +8,6 @@ from ment_api.persistence import mongo
 logger = logging.getLogger(__name__)
 
 
-async def is_on_feed_location(
-    feed_id: CustomObjectId, current_location: Tuple[Lat, Lng]
-) -> Tuple[bool, Optional[Location]]:
-    """Fast geospatial check using 2dsphere index.
-
-    Returns (is_inside_radius, nearest_location)
-    """
-    try:
-        near_point = {
-            "type": "Point",
-            "coordinates": [current_location[0],current_location[1], ],
-        }
-
-        pipeline = [
-            {
-                "$geoNear": {
-                    "near": near_point,
-                    "distanceField": "distance",
-                    "spherical": True,
-                    "key": "location",
-                    "query": {"feed_id": feed_id},
-                    "limit": 1,
-                }
-            },
-            {
-                "$project": {
-                    "name": 1,
-                    "address": 1,
-                    "radius": 1,
-                    "distance": 1,
-                    "lat": {"$arrayElemAt": ["$location.coordinates", 1]},
-                    "lng": {"$arrayElemAt": ["$location.coordinates", 0]},
-                }
-            },
-        ]
-        print(pipeline)
-
-        results = await mongo.feed_locations.aggregate(pipeline)
-        if not results:
-            return False, None
-
-        doc = results[0]
-        inside = bool(doc.get("distance", float("inf")) <= doc.get("radius", 300))
-        nearest_location = Location(
-            name=doc.get("name", ""),
-            address=doc.get("address", ""),
-            location=(doc.get("lat", 0.0), doc.get("lng", 0.0)),
-        )
-
-        return inside, nearest_location
-
-    except Exception as e:
-        logger.error(
-            "Location check failed",
-            extra={
-                "json_fields": {
-                    "feed_id": str(feed_id),
-                    "operation": "is_on_feed_location",
-                    "error_message": str(e),
-                },
-                "labels": {"component": "location_service", "severity": "high"},
-            },
-            exc_info=True,
-        )
-        return False, None
-
-
 async def get_nearest_locations_for_feeds(
     feed_ids: List[CustomObjectId], current_location: Tuple[Lat, Lng]
 ) -> Dict[CustomObjectId, Tuple[bool, Optional[Location]]]:
@@ -87,9 +20,8 @@ async def get_nearest_locations_for_feeds(
 
     near_point = {
         "type": "Point",
-        "coordinates": [current_location[0], current_location[1] ],
+        "coordinates": [current_location[1], current_location[0]],
     }
-
     pipeline = [
         {
             "$geoNear": {
