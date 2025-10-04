@@ -316,11 +316,16 @@ async def _fetch_youtube_metadata_and_process_in_background(
 
 
 async def _upsert_live_user_presence(
-    feed_id: CustomObjectId, external_user_id: str
+    feed_id: CustomObjectId, external_user_id: str, invalidate_cache: bool = True
 ) -> None:
     """Upsert the caller into live_users for the given feed and invalidate cached counts.
 
     Runs as a fire-and-forget task from request handlers to avoid blocking responses.
+
+    Args:
+        feed_id: The feed ID to upsert presence for
+        external_user_id: The user ID to upsert
+        invalidate_cache: Whether to invalidate Redis cache (set to False for batch operations)
     """
     from ment_api.services.redis_service import get_async_redis_client
 
@@ -340,9 +345,10 @@ async def _upsert_live_user_presence(
             f"Live user presence upserted for feed {feed_id} and user {external_user_id}"
         )
 
-        # Invalidate cached live users count for this feed
-        redis = get_async_redis_client()
-        await redis.delete(f"live_users_count:{feed_id}")
+        # Invalidate cached live users count for this feed (only if requested)
+        if invalidate_cache:
+            redis = get_async_redis_client()
+            await redis.delete(f"live_users_count:{feed_id}")
 
         logger.info(
             "Live user presence upserted",
@@ -486,8 +492,8 @@ async def live_user_presence_upsert_test():
     """
     # Feed IDs to populate
     feed_ids = [
-        CustomObjectId("6759a55b2b00e2d26d2a6279"),
-        CustomObjectId("671f9debbd76e3f8d3c80348"),
+        ObjectId("6759a55b2b00e2d26d2a6279"),
+        ObjectId("671f9debbd76e3f8d3c80348"),
     ]
 
     # Batch configuration
@@ -499,7 +505,7 @@ async def live_user_presence_upsert_test():
         users = await mongo.users.find_all(
             {
                 "photos.0.blur_hash": {"$exists": True},
-                "phone_number": {"$exists": True},
+                "phone_number": {"$exists": True, "$regex": "^995"},
             }
         )
 
@@ -539,6 +545,7 @@ async def live_user_presence_upsert_test():
                 upsert_tasks = []
 
                 # Create upsert tasks for each user and each feed
+                # Skip cache invalidation during batch processing to avoid Redis connection exhaustion
                 for user in user_batch:
                     external_user_id = user.get("external_user_id")
                     if not external_user_id:
@@ -546,7 +553,9 @@ async def live_user_presence_upsert_test():
 
                     for feed_id in feed_ids:
                         upsert_tasks.append(
-                            _upsert_live_user_presence(feed_id, external_user_id)
+                            _upsert_live_user_presence(
+                                feed_id, external_user_id, invalidate_cache=False
+                            )
                         )
 
                 # Execute all upserts in parallel within the batch
@@ -586,6 +595,36 @@ async def live_user_presence_upsert_test():
                     exc_info=True,
                 )
                 continue
+
+        # Invalidate Redis cache once for each feed after all batches are complete
+        from ment_api.services.redis_service import get_async_redis_client
+
+        redis = get_async_redis_client()
+        for feed_id in feed_ids:
+            try:
+                await redis.delete(f"live_users_count:{feed_id}")
+                logger.info(
+                    "Invalidated cache for feed",
+                    extra={
+                        "json_fields": {
+                            "feed_id": str(feed_id),
+                            "operation": "cache_invalidation",
+                        },
+                        "labels": {"component": "feeds"},
+                    },
+                )
+            except Exception as cache_error:
+                logger.warning(
+                    "Failed to invalidate cache for feed",
+                    extra={
+                        "json_fields": {
+                            "feed_id": str(feed_id),
+                            "error_message": str(cache_error),
+                            "operation": "cache_invalidation_failed",
+                        },
+                        "labels": {"component": "feeds"},
+                    },
+                )
 
         logger.info(
             "Completed live user presence upsert",
@@ -630,7 +669,16 @@ async def live_users(
     feed_id: Annotated[CustomObjectId, Query(...)],
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ):
+    from ment_api.services.redis_service import get_async_redis_client
+
     external_user_id = request.state.supabase_user_id
+    redis = get_async_redis_client()
+
+    # Cache key for random offset
+    cache_key = f"live_users_random_offset:{feed_id}"
+
+    # Try to get cached random offset from Redis
+    cached_offset = await redis.get(cache_key)
 
     # First, get the total count of live users (excluding current user)
     total_count = await mongo.live_users.count_documents(
@@ -643,8 +691,28 @@ async def live_users(
 
     # Calculate random offset
     random_offset = 0
-    if total_count > limit:
-        random_offset = random.randint(0, total_count - limit)
+    from_cache = False
+
+    if cached_offset is not None:
+        # Use cached offset if it exists and is valid
+        random_offset = int(cached_offset)
+        from_cache = True
+
+        # Validate that cached offset is still valid for current count
+        if total_count > limit and random_offset > (total_count - limit):
+            # Recalculate if cached offset is now out of bounds
+            random_offset = (
+                random.randint(0, total_count - limit) if total_count > limit else 0
+            )
+            await redis.set(cache_key, str(random_offset), ex=5)
+            from_cache = False
+    else:
+        # Generate new random offset
+        if total_count > limit:
+            random_offset = random.randint(0, total_count - limit)
+
+        # Cache the random offset for 5 seconds
+        await redis.set(cache_key, str(random_offset), ex=5)
 
     logger.info(
         "Fetching random live users",
@@ -654,6 +722,7 @@ async def live_users(
                 "total_count": total_count,
                 "random_offset": random_offset,
                 "limit": limit,
+                "from_cache": from_cache,
                 "operation": "get_random_live_users",
             },
             "labels": {"component": "feeds"},
