@@ -479,13 +479,187 @@ async def send_push_notification(notification_data: Annotated[Dict, Body(...)]):
     await send_global_notifications(title, description)
 
 
+@router.post("/test")
+async def live_user_presence_upsert_test():
+    """
+    Test endpoint to populate live users for specific feeds in batches
+    """
+    # Feed IDs to populate
+    feed_ids = [
+        CustomObjectId("6759a55b2b00e2d26d2a6279"),
+        CustomObjectId("671f9debbd76e3f8d3c80348"),
+    ]
+
+    # Batch configuration
+    BATCH_SIZE = 100
+    BATCH_DELAY = 1.0
+
+    try:
+        # Query users with required filters
+        users = await mongo.users.find_all(
+            {
+                "photos.0.blur_hash": {"$exists": True},
+                "phone_number": {"$exists": True},
+            }
+        )
+
+        if not users:
+            logger.info(
+                "No users found matching criteria",
+                extra={
+                    "json_fields": {"operation": "live_user_test_no_users"},
+                    "labels": {"component": "feeds"},
+                },
+            )
+            return {"message": "No users found", "users_processed": 0}
+
+        # Group users into batches
+        user_batches = [
+            users[i : i + BATCH_SIZE] for i in range(0, len(users), BATCH_SIZE)
+        ]
+
+        logger.info(
+            "Starting live user presence upsert",
+            extra={
+                "json_fields": {
+                    "total_users": len(users),
+                    "total_batches": len(user_batches),
+                    "feed_count": len(feed_ids),
+                    "operation": "live_user_test_start",
+                },
+                "labels": {"component": "feeds"},
+            },
+        )
+
+        total_processed = 0
+
+        # Process each batch
+        for batch_index, user_batch in enumerate(user_batches):
+            try:
+                upsert_tasks = []
+
+                # Create upsert tasks for each user and each feed
+                for user in user_batch:
+                    external_user_id = user.get("external_user_id")
+                    if not external_user_id:
+                        continue
+
+                    for feed_id in feed_ids:
+                        upsert_tasks.append(
+                            _upsert_live_user_presence(feed_id, external_user_id)
+                        )
+
+                # Execute all upserts in parallel within the batch
+                await asyncio.gather(*upsert_tasks, return_exceptions=True)
+
+                total_processed += len(user_batch)
+
+                # Delay between batches (except after the last one)
+                if batch_index < len(user_batches) - 1:
+                    await asyncio.sleep(BATCH_DELAY)
+
+                logger.info(
+                    "Processed batch",
+                    extra={
+                        "json_fields": {
+                            "batch_number": batch_index + 1,
+                            "total_batches": len(user_batches),
+                            "users_in_batch": len(user_batch),
+                            "total_processed": total_processed,
+                            "operation": "live_user_test_batch_complete",
+                        },
+                        "labels": {"component": "feeds"},
+                    },
+                )
+
+            except Exception as e:
+                logger.error(
+                    "Error processing batch",
+                    extra={
+                        "json_fields": {
+                            "batch_number": batch_index + 1,
+                            "error_message": str(e),
+                            "operation": "live_user_test_batch_error",
+                        },
+                        "labels": {"component": "feeds", "severity": "high"},
+                    },
+                    exc_info=True,
+                )
+                continue
+
+        logger.info(
+            "Completed live user presence upsert",
+            extra={
+                "json_fields": {
+                    "total_users": len(users),
+                    "total_processed": total_processed,
+                    "feed_count": len(feed_ids),
+                    "operation": "live_user_test_complete",
+                },
+                "labels": {"component": "feeds"},
+            },
+        )
+
+        return {
+            "message": "Live user presence upsert completed",
+            "total_users": len(users),
+            "users_processed": total_processed,
+            "feeds_updated": len(feed_ids),
+            "batches_processed": len(user_batches),
+        }
+
+    except Exception as e:
+        logger.error(
+            "Error in live user presence test",
+            extra={
+                "json_fields": {
+                    "error_message": str(e),
+                    "operation": "live_user_test_error",
+                },
+                "labels": {"component": "feeds", "severity": "high"},
+            },
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=f"Test failed: {str(e)}")
+
+
 # Add this new endpoint
 @router.get("/live-users", response_model=List[LiveUser], operation_id="get_live_users")
 async def live_users(
     request: Request,
     feed_id: Annotated[CustomObjectId, Query(...)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ):
     external_user_id = request.state.supabase_user_id
+
+    # First, get the total count of live users (excluding current user)
+    total_count = await mongo.live_users.count_documents(
+        {
+            "feed_id": feed_id,
+            "expiration_date": {"$gt": datetime.utcnow()},
+            "author_id": {"$ne": external_user_id},
+        }
+    )
+
+    # Calculate random offset
+    random_offset = 0
+    if total_count > limit:
+        random_offset = random.randint(0, total_count - limit)
+
+    logger.info(
+        "Fetching random live users",
+        extra={
+            "json_fields": {
+                "feed_id": str(feed_id),
+                "total_count": total_count,
+                "random_offset": random_offset,
+                "limit": limit,
+                "operation": "get_random_live_users",
+            },
+            "labels": {"component": "feeds"},
+        },
+    )
+
     pipeline = [
         {
             "$match": {
@@ -530,6 +704,8 @@ async def live_users(
             }
         },
         {"$sort": {"is_friend": -1}},  # Sort friends first
+        {"$skip": random_offset},  # Random offset for variety
+        {"$limit": limit},  # Limit the number of results
     ]
     results = await mongo.live_users.aggregate(pipeline)
 
