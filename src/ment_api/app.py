@@ -19,6 +19,7 @@ from ment_api.routes import (
     feed,
     feeds,
     friend_routes,
+    geofence,
     live_user_actions,
     livekit,
     notifications,
@@ -155,6 +156,7 @@ app.include_router(live_user_actions.router)
 app.include_router(space.router)
 app.include_router(comments.router)
 app.include_router(reactions.router)
+app.include_router(geofence.router)
 
 
 class GetCountryResponse(BaseModel):

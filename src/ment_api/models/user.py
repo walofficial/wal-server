@@ -27,6 +27,7 @@ class User(BaseModel):
     photos: List[UserPhoto]
     is_in_waitlist: Optional[bool] = False
     can_summarify: Optional[bool] = False
+    bio: Optional[str] = None
     # Preferred feeds and content language (derived from country detection), shouldn't be optional
     # Default values exist for non migrated users
     preferred_news_feed_id: str = "687960db5051460a7afd6e63"

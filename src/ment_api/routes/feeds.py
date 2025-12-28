@@ -381,7 +381,7 @@ async def _upsert_live_user_presence(
 def get_location_feeds_pipeline(category_id: CustomObjectId):
     """Common pipeline for getting tasks with live user and verification counts"""
     return [
-        {"$match": {"feed_category_id": category_id, "hidden": settings.env == "dev"}},
+        {"$match": {"feed_category_id": category_id}},
         {
             "$project": {
                 "_id": 1,
@@ -424,54 +424,51 @@ async def get_location_feeds(
     # TODO: remove category id from the FE and also the from BE. it should just be country id based on the user selected region or ip.
     feeds = await mongo.feeds.aggregate(get_location_feeds_pipeline(category_id))
     feeds = list(feeds)
-
     feeds_at_location = []
     nearest_feeds = []
 
     feed_ids = [Feed(**feed).id for feed in feeds]
 
-    if settings.env == "dev" or ignore_location_check:
-        # Preserve existing behavior: in prod, return all as at location
-        feeds_at_location = [Feed(**feed) for feed in feeds]
-    else:
-        mapping = await get_nearest_locations_for_feeds(feed_ids, user_location)
-        for feed_id in mapping:
-            feed_obj = Feed(
-                **next(feed for feed in feeds if Feed(**feed).id == feed_id)
-            )
-            print(feed_obj)
-            result = mapping.get(feed_id)
-            if result:
-                is_at_location, nearest_location = result
-            else:
-                is_at_location, nearest_location = False, None
+    mapping = await get_nearest_locations_for_feeds(feed_ids, user_location)
+    for feed_id in mapping:
+        feed_obj = Feed(
+            **next(feed for feed in feeds if Feed(**feed).id == feed_id)
+        )
+        result = mapping.get(feed_id)
+        if result:
+            is_at_location, nearest_location = result
+        else:
+            is_at_location, nearest_location = False, None
 
-            if is_at_location:
-                # Fire-and-forget presence upsert for the current user on this feed
-                if external_user_id:
-                    asyncio.create_task(
-                        _upsert_live_user_presence(feed_id, external_user_id)
-                    )
-                feeds_at_location.append(feed_obj)
-            else:
-                # Hide feeds marked as nearby-only when user is not at the location
-                if getattr(feed_obj, "nearby_feed", False):
-                    logger.info(
-                        "Skipping nearby-only feed for off-location user",
-                        extra={
-                            "json_fields": {
-                                "feed_id": str(feed_id),
-                                "nearby_feed": True,
-                                "operation": "filter_nearby_only_feed",
-                            },
-                            "labels": {"component": "feeds"},
-                        },
-                    )
-                    continue
-
-                nearest_feeds.append(
-                    FeedWithLocation(feed=feed_obj, nearest_location=nearest_location)
+        if is_at_location:
+            # Fire-and-forget presence upsert for the current user on this feed
+            if external_user_id:
+                asyncio.create_task(
+                    _upsert_live_user_presence(feed_id, external_user_id)
                 )
+            feeds_at_location.append(feed_obj)
+        else:
+            # Hide feeds marked as nearby-only when user is not at the location
+            if getattr(feed_obj, "nearby_feed", False):
+                logger.info(
+                    "Skipping nearby-only feed for off-location user",
+                    extra={
+                        "json_fields": {
+                            "feed_id": str(feed_id),
+                            "nearby_feed": True,
+                            "operation": "filter_nearby_only_feed",
+                        },
+                        "labels": {"component": "feeds"},
+                    },
+                )
+                continue
+
+            nearest_feeds.append(
+                FeedWithLocation(feed=feed_obj, nearest_location=nearest_location)
+            )
+
+    # Limit to 3 nearest locations (already sorted by distance from pipeline)
+    nearest_feeds = nearest_feeds[:3]
 
     return FeedsResponse(
         feeds_at_location=feeds_at_location, nearest_feeds=nearest_feeds
@@ -660,6 +657,293 @@ async def live_user_presence_upsert_test():
             exc_info=True,
         )
         raise HTTPException(status_code=500, detail=f"Test failed: {str(e)}")
+
+
+class SeedLiveUsersRequest(BaseModel):
+    count: int = 10
+    feed_ids: Optional[List[str]] = None
+
+
+class SeedLiveUsersResponse(BaseModel):
+    message: str
+    users_seeded: int
+    user_ids: List[str]
+    feed_ids: List[str]
+    seed_id: str
+
+
+# Store active seeds for cleanup
+_active_seeds: Dict[str, Dict] = {}
+
+
+@router.post(
+    "/seed-live-users",
+    response_model=SeedLiveUsersResponse,
+    operation_id="seed_live_users",
+)
+async def seed_live_users(
+    request: SeedLiveUsersRequest,
+):
+    """
+    Seed the live_users collection with random users for testing.
+
+    This endpoint:
+    1. Fetches random users from the users collection
+    2. Inserts them as live_users for feeds with hidden: true (or specified feeds)
+    3. Returns a seed_id that can be used to cleanup later
+
+    If no feed_ids are provided, uses all feeds with hidden: true.
+    """
+    import uuid
+
+    # Get feed IDs - either from request or from hidden feeds
+    if request.feed_ids:
+        feed_ids = request.feed_ids
+        feed_object_ids = [ObjectId(fid) for fid in feed_ids]
+    else:
+        # Get feeds with hidden: true
+        hidden_feeds = await mongo.feeds.find_all({"hidden": True})
+        if not hidden_feeds:
+            raise HTTPException(status_code=404, detail="No hidden feeds found")
+        feed_object_ids = [feed["_id"] for feed in hidden_feeds]
+        feed_ids = [str(fid) for fid in feed_object_ids]
+        logger.info(
+            "Using hidden feeds for seeding",
+            extra={
+                "json_fields": {
+                    "feed_count": len(feed_ids),
+                    "feed_ids": feed_ids,
+                    "operation": "seed_live_users_hidden_feeds",
+                },
+                "labels": {"component": "feeds"},
+            },
+        )
+
+    # Get random users using $sample aggregation
+    pipeline = [
+        {
+            "$match": {
+                "external_user_id": {"$exists": True},
+                "photos": {"$exists": True, "$ne": []},
+            }
+        },
+        {"$sample": {"size": request.count}},
+    ]
+    users = await mongo.users.aggregate(pipeline)
+
+    if not users:
+        raise HTTPException(status_code=404, detail="No users found in database")
+
+    inserted_user_ids = []
+    expiration_date = datetime.now(timezone.utc) + timedelta(hours=12)
+
+    for user in users:
+        external_user_id = user.get("external_user_id")
+        if not external_user_id:
+            continue
+
+        for feed_id in feed_object_ids:
+            try:
+                await mongo.live_users.update_one(
+                    {"author_id": external_user_id, "feed_id": feed_id},
+                    {
+                        "$set": {"expiration_date": expiration_date},
+                        "$setOnInsert": {"created_at": datetime.now(timezone.utc)},
+                    },
+                    upsert=True,
+                )
+                if external_user_id not in inserted_user_ids:
+                    inserted_user_ids.append(external_user_id)
+            except Exception as e:
+                logger.error(
+                    "Failed to insert live user",
+                    extra={
+                        "json_fields": {
+                            "user_id": external_user_id,
+                            "feed_id": str(feed_id),
+                            "error_message": str(e),
+                            "operation": "seed_live_user_insert_failed",
+                        },
+                        "labels": {"component": "feeds"},
+                    },
+                )
+
+    # Generate a unique seed ID for cleanup
+    seed_id = str(uuid.uuid4())
+    _active_seeds[seed_id] = {
+        "user_ids": inserted_user_ids,
+        "feed_ids": feed_ids,
+        "created_at": datetime.now(timezone.utc),
+    }
+
+    # Invalidate cache for affected feeds
+    from ment_api.services.redis_service import get_async_redis_client
+
+    redis = get_async_redis_client()
+    for feed_id in feed_object_ids:
+        try:
+            await redis.delete(f"live_users_count:{feed_id}")
+        except Exception:
+            pass
+
+    logger.info(
+        "Seeded live users",
+        extra={
+            "json_fields": {
+                "seed_id": seed_id,
+                "users_seeded": len(inserted_user_ids),
+                "feed_count": len(feed_ids),
+                "operation": "seed_live_users_complete",
+            },
+            "labels": {"component": "feeds"},
+        },
+    )
+
+    return SeedLiveUsersResponse(
+        message="Live users seeded successfully",
+        users_seeded=len(inserted_user_ids),
+        user_ids=inserted_user_ids,
+        feed_ids=feed_ids,
+        seed_id=seed_id,
+    )
+
+
+class CleanupSeedResponse(BaseModel):
+    message: str
+    deleted_count: int
+
+
+@router.delete(
+    "/seed-live-users/{seed_id}",
+    response_model=CleanupSeedResponse,
+    operation_id="cleanup_seed_live_users",
+)
+async def cleanup_seed_live_users(
+    seed_id: str,
+):
+    """
+    Cleanup seeded live users by seed_id.
+
+    Use the seed_id returned from the seed-live-users endpoint to remove
+    the previously seeded users.
+    """
+    if seed_id not in _active_seeds:
+        raise HTTPException(status_code=404, detail=f"Seed ID {seed_id} not found")
+
+    seed_data = _active_seeds.pop(seed_id)
+    user_ids = seed_data["user_ids"]
+    feed_ids = seed_data["feed_ids"]
+    feed_object_ids = [ObjectId(fid) for fid in feed_ids]
+
+    deleted_count = 0
+    for user_id in user_ids:
+        for feed_id in feed_object_ids:
+            try:
+                result = await mongo.live_users.delete_one(
+                    {"author_id": user_id, "feed_id": feed_id}
+                )
+                deleted_count += result.deleted_count
+            except Exception as e:
+                logger.error(
+                    "Failed to delete seeded live user",
+                    extra={
+                        "json_fields": {
+                            "user_id": user_id,
+                            "feed_id": str(feed_id),
+                            "error_message": str(e),
+                            "operation": "cleanup_seed_live_user_failed",
+                        },
+                        "labels": {"component": "feeds"},
+                    },
+                )
+
+    # Invalidate cache
+    from ment_api.services.redis_service import get_async_redis_client
+
+    redis = get_async_redis_client()
+    for feed_id in feed_object_ids:
+        try:
+            await redis.delete(f"live_users_count:{feed_id}")
+        except Exception:
+            pass
+
+    logger.info(
+        "Cleaned up seeded live users",
+        extra={
+            "json_fields": {
+                "seed_id": seed_id,
+                "deleted_count": deleted_count,
+                "operation": "cleanup_seed_live_users_complete",
+            },
+            "labels": {"component": "feeds"},
+        },
+    )
+
+    return CleanupSeedResponse(
+        message=f"Cleaned up seed {seed_id}",
+        deleted_count=deleted_count,
+    )
+
+
+@router.delete(
+    "/seed-live-users",
+    response_model=CleanupSeedResponse,
+    operation_id="cleanup_all_seed_live_users",
+)
+async def cleanup_all_seed_live_users():
+    """
+    Cleanup ALL seeded live users from all active seeds.
+
+    This removes all users that were seeded via the seed-live-users endpoint.
+    """
+    if not _active_seeds:
+        return CleanupSeedResponse(message="No active seeds to cleanup", deleted_count=0)
+
+    total_deleted = 0
+    seed_ids = list(_active_seeds.keys())
+
+    for seed_id in seed_ids:
+        seed_data = _active_seeds.pop(seed_id)
+        user_ids = seed_data["user_ids"]
+        feed_ids = seed_data["feed_ids"]
+        feed_object_ids = [ObjectId(fid) for fid in feed_ids]
+
+        for user_id in user_ids:
+            for feed_id in feed_object_ids:
+                try:
+                    result = await mongo.live_users.delete_one(
+                        {"author_id": user_id, "feed_id": feed_id}
+                    )
+                    total_deleted += result.deleted_count
+                except Exception:
+                    pass
+
+        # Invalidate cache
+        from ment_api.services.redis_service import get_async_redis_client
+
+        redis = get_async_redis_client()
+        for feed_id in feed_object_ids:
+            try:
+                await redis.delete(f"live_users_count:{feed_id}")
+            except Exception:
+                pass
+
+    logger.info(
+        "Cleaned up all seeded live users",
+        extra={
+            "json_fields": {
+                "seeds_cleaned": len(seed_ids),
+                "total_deleted": total_deleted,
+                "operation": "cleanup_all_seeds_complete",
+            },
+            "labels": {"component": "feeds"},
+        },
+    )
+
+    return CleanupSeedResponse(
+        message=f"Cleaned up {len(seed_ids)} seeds",
+        deleted_count=total_deleted,
+    )
 
 
 # Add this new endpoint

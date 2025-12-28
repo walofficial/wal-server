@@ -44,6 +44,8 @@ class ProfileInformationResponse(BaseModel):
     photos: List[UserPhoto]
     is_friend: bool
     user_id: str
+    bio: Optional[str] = None
+
 
 
 @router.post(
@@ -392,6 +394,7 @@ async def update_user(
     try:
         external_user_id = request.state.supabase_user_id
         update_data = update_user_request.dict(exclude_none=True)
+
         await mongo.users.update_one(
             {"external_user_id": external_user_id}, {"$set": update_data}
         )
@@ -399,6 +402,7 @@ async def update_user(
         return {"ok": True}
     except Exception:
         raise HTTPException(status_code=400, detail="update error")
+
 
 
 class FCPResponse(BaseModel):
@@ -782,6 +786,7 @@ async def get_user_profile(
         photos=user.get("photos", []),
         is_friend=is_friend is not None,
         user_id=str(user_id),
+        bio=user.get("bio"),
     )
 
 

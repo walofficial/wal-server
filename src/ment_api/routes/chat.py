@@ -38,20 +38,24 @@ push_client = PushClient()
 
 notification_queue: Dict[str, asyncio.Task] = {}
 
-# helper: atomic swap + return sids
+# helper: atomic swap + return current sids for this user
 DEVICE_SWAP_LUA = """
 local prev = redis.call("GET", KEYS[1])
 redis.call("SET", KEYS[1], ARGV[1])
-local sids = redis.call("SMEMBERS", KEYS[2])
+local sids = redis.call("ZRANGE", KEYS[2], 0, -1)
 return {prev, sids}
 """
 
-SID_TTL_SECONDS = 24 * 3600
+# Presence is soft-state: it must expire if the instance/network dies.
+# Client sends periodic `heartbeat` to refresh these TTLs.
+PRESENCE_SID_TTL_SECONDS = 90
+PRESENCE_ONLINE_WINDOW_SECONDS = 75
 
 
 # Redis key helpers for scalable connection tracking
 def user_sids_key(user_id: str) -> str:
-    return f"user_sids:{user_id}"
+    # ZSET: member=sid, score=last_seen_epoch_seconds
+    return f"user_presence_sids:{user_id}"
 
 
 def sid_user_key(sid: str) -> str:
@@ -64,6 +68,35 @@ def sid_device_key(sid: str) -> str:
 
 def user_info_key(user_id: str) -> str:
     return f"user_info:{user_id}"
+
+
+def _now_epoch_seconds() -> int:
+    return int(datetime.now(tz=timezone.utc).timestamp())
+
+
+async def _prune_and_count_online(redis, user_id: str) -> int:
+    """Remove stale sids and return number of active sids within online window."""
+    key = user_sids_key(user_id)
+    now = _now_epoch_seconds()
+    min_score = now - PRESENCE_ONLINE_WINDOW_SECONDS
+    pipe = redis.pipeline()
+    pipe.zremrangebyscore(key, 0, min_score - 1)
+    pipe.zcount(key, min_score, "+inf")
+    results = await pipe.execute()
+    # results[0] is removed count, results[1] is active count
+    return int(results[1] or 0)
+
+
+async def _touch_presence(redis, user_id: str, sid: str) -> None:
+    """Mark a sid as recently seen and keep the per-user ZSET bounded."""
+    key = user_sids_key(user_id)
+    now = _now_epoch_seconds()
+    min_score = now - PRESENCE_ONLINE_WINDOW_SECONDS
+    pipe = redis.pipeline()
+    pipe.zadd(key, {sid: now})
+    pipe.expire(key, PRESENCE_SID_TTL_SECONDS)
+    pipe.zremrangebyscore(key, 0, min_score - 1)
+    await pipe.execute()
 
 
 async def broadcast_user_public_key(user_id: str, public_key: str) -> None:
@@ -86,9 +119,9 @@ async def broadcast_user_public_key(user_id: str, public_key: str) -> None:
                 if participant == user_id:
                     continue
                 try:
-                    participant_sids = await redis.smembers(user_sids_key(participant))
+                    participant_sids = await redis.zrange(user_sids_key(participant), 0, -1)
                 except Exception:
-                    participant_sids = set()
+                    participant_sids = []
                 if not participant_sids:
                     continue
                 for participant_sid in list(participant_sids):
@@ -143,12 +176,24 @@ async def delayed_send_chat_notification(
     message: str,
     room_id: str,
     message_title: str,
+    sender_id: str | None = None,
+    sender_avatar_url: str | None = None,
     encrypted_content: str = None,
     nonce: str = None,
 ):
     try:
         await asyncio.sleep(3)
-        notification_data = {"type": "new_message", "roomId": room_id}
+        # iOS Communication Notifications (Messenger/iMessage style) are generated in the
+        # Notification Service Extension from these structured fields.
+        notification_data = {
+            "type": "new_message",
+            "roomId": room_id,
+            "senderDisplayName": message_title,
+        }
+        if sender_id:
+            notification_data["senderId"] = sender_id
+        if sender_avatar_url:
+            notification_data["senderAvatarUrl"] = sender_avatar_url
         if encrypted_content and nonce:
             # Consider not sending encrypted payload over push
             notification_data["encryptedContent"] = encrypted_content
@@ -191,6 +236,8 @@ async def send_chat_notification(
     message: str,
     room_id: str,
     message_title: str,
+    sender_id: str | None = None,
+    sender_avatar_url: str | None = None,
     encrypted_content: str = None,
     nonce: str = None,
 ):
@@ -216,7 +263,14 @@ async def send_chat_notification(
 
     task = asyncio.create_task(
         delayed_send_chat_notification(
-            user_id, message, room_id, message_title, encrypted_content, nonce
+            user_id,
+            message,
+            room_id,
+            message_title,
+            sender_id,
+            sender_avatar_url,
+            encrypted_content,
+            nonce,
         )
     )
     notification_queue[user_id] = task
@@ -270,7 +324,7 @@ async def connect(sid: str, environ: dict, auth) -> None:
     except Exception:
         # fallback to simple set
         await redis.set(active_device_key, device_id)
-        sids = await redis.smembers(user_sids_key_name)
+        sids = await redis.zrange(user_sids_key_name, 0, -1)
         _prev_device = None
 
     # Disconnect sids whose device != device_id
@@ -320,17 +374,19 @@ async def connect(sid: str, environ: dict, auth) -> None:
         if sids_to_disconnect:
             pipe = redis.pipeline()
             for existing_sid in sids_to_disconnect:
-                pipe.srem(user_sids_key_name, existing_sid)
+                pipe.zrem(user_sids_key_name, existing_sid)
                 pipe.delete(sid_user_key(existing_sid))
                 pipe.delete(sid_device_key(existing_sid))
             await pipe.execute()
 
     # Bookkeeping for this connection (with TTLs) - batch operations
     pipe = redis.pipeline()
-    pipe.set(sid_user_key(sid), user_id, ex=SID_TTL_SECONDS)
-    pipe.set(sid_device_key(sid), device_id, ex=SID_TTL_SECONDS)
-    pipe.sadd(user_sids_key(user_id), sid)
+    pipe.set(sid_user_key(sid), user_id, ex=PRESENCE_SID_TTL_SECONDS)
+    pipe.set(sid_device_key(sid), device_id, ex=PRESENCE_SID_TTL_SECONDS)
     await pipe.execute()
+
+    # Mark presence (ZSET) + TTL
+    await _touch_presence(redis, user_id, sid)
 
     if user_public_key:
         await redis.set(f"user_public_key:{user_id}", user_public_key)
@@ -346,7 +402,7 @@ async def disconnect(sid: str) -> None:
 
     pipe = redis.pipeline()
     if user_id:
-        pipe.srem(user_sids_key(user_id), sid)
+        pipe.zrem(user_sids_key(user_id), sid)
     pipe.delete(sid_user_key(sid))
     pipe.delete(sid_device_key(sid))
     await pipe.execute()
@@ -377,11 +433,12 @@ async def heartbeat(sid: str) -> None:
         if user_id or device_id:
             pipe = redis.pipeline()
             if user_id:
-                pipe.expire(sid_user_key(sid), SID_TTL_SECONDS)
-                pipe.sadd(user_sids_key(user_id), sid)
+                pipe.expire(sid_user_key(sid), PRESENCE_SID_TTL_SECONDS)
             if device_id:
-                pipe.expire(sid_device_key(sid), SID_TTL_SECONDS)
+                pipe.expire(sid_device_key(sid), PRESENCE_SID_TTL_SECONDS)
             await pipe.execute()
+            if user_id:
+                await _touch_presence(redis, user_id, sid)
 
         logger.info(
             "Heartbeat",
@@ -412,18 +469,38 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
     temporary_id = data["temporary_id"]
     room_id = data["room_id"]
 
-    logger.info(f"Forwarding encrypted message from {sid} to {recipient}")
+    logger.info(
+        "Forwarding encrypted message",
+        extra={
+            "json_fields": {
+                "sid": sid,
+                "recipient": recipient,
+                "room_id": room_id,
+                "operation": "private_message_forward",
+            },
+            "labels": {"component": "chat_messages"},
+        },
+    )
 
     redis = get_async_redis_client()
 
-    # Use pipeline to batch all Redis operations
-    pipe = redis.pipeline()
-    pipe.get(sid_user_key(sid))
-    pipe.scard(user_sids_key(recipient))
-    results = await pipe.execute()
-    sender = results[0]
-    is_online = bool(results[1])
-
+    # Resolve sender + compute recipient presence via TTL'd heartbeat window
+    sender = await redis.get(sid_user_key(sid))
+    online_count = await _prune_and_count_online(redis, recipient)
+    is_online = online_count > 0
+    logger.info(
+        "Recipient presence checked",
+        extra={
+            "json_fields": {
+                "sender": sender or "",
+                "recipient": recipient,
+                "recipient_online": is_online,
+                "active_sids": online_count,
+                "operation": "presence_check_for_message",
+            },
+            "labels": {"component": "chat_presence"},
+        },
+    )
     if is_online:
         # Get sender info from cache (fallback to empty strings)
         sender_info = await redis.hgetall(user_info_key(sender)) if sender else {}
@@ -447,6 +524,7 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
         # Get sender username from cache first, fallback to DB
         sender_info = await redis.hgetall(user_info_key(sender)) if sender else {}
         message_title = sender_info.get("user_username")
+        sender_profile_picture = sender_info.get("user_profile_picture", "")
         if not message_title:
             user_data = await mongo.users.find_one({"external_user_id": sender})
             message_title = (user_data.get("username") if user_data else None) or "Ment"
@@ -456,6 +534,8 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
             "ახალი შეტყობინება",
             room_id,
             message_title,
+            sender,
+            sender_profile_picture,
             encrypted_content,
             nonce,
         )
@@ -479,14 +559,8 @@ async def notify_single_message_seen(sid: str, data: Dict[str, str]) -> None:
     temporary_id = data["temporary_id"]
     redis = get_async_redis_client()
 
-    # Use pipeline to batch Redis operations
-    pipe = redis.pipeline()
-    pipe.get(sid_user_key(sid))
-    pipe.scard(user_sids_key(recipient))
-    results = await pipe.execute()
-
-    sender = results[0]
-    is_online = bool(results[1])
+    sender = await redis.get(sid_user_key(sid))
+    is_online = (await _prune_and_count_online(redis, recipient)) > 0
 
     if is_online:
         await sio.emit(
@@ -507,7 +581,7 @@ async def check_user_connection(sid: str, data: Dict[str, str]) -> None:
     is_connected = False
     if is_that_connected_id:
         try:
-            is_connected = bool(await redis.scard(user_sids_key(is_that_connected_id)))
+            is_connected = (await _prune_and_count_online(redis, is_that_connected_id)) > 0
         except Exception:
             is_connected = False
     await sio.emit("user_connection_status", {"is_connected": is_connected}, to=sid)
@@ -830,7 +904,7 @@ async def send_public_key(request: SendPublicKeyRequest):
     # If we know the device_id, proactively disconnect other device sessions for this user
     if request.device_id:
         try:
-            sids = await redis.smembers(user_sids_key(request.user_id))
+            sids = await redis.zrange(user_sids_key(request.user_id), 0, -1)
             if sids:
                 # Batch get all device IDs at once
                 device_keys = [sid_device_key(sid) for sid in list(sids)]
@@ -858,7 +932,7 @@ async def send_public_key(request: SendPublicKeyRequest):
                 if sids_to_disconnect:
                     pipe = redis.pipeline()
                     for existing_sid in sids_to_disconnect:
-                        pipe.srem(user_sids_key(request.user_id), existing_sid)
+                        pipe.zrem(user_sids_key(request.user_id), existing_sid)
                         pipe.delete(sid_user_key(existing_sid))
                         pipe.delete(sid_device_key(existing_sid))
                     await pipe.execute()
@@ -1035,7 +1109,7 @@ async def list_public_keys() -> PublicKeysResponse:
     connection_status = {}
     for user_id in user_ids:
         try:
-            is_connected = bool(await redis.scard(user_sids_key(user_id)))
+            is_connected = (await _prune_and_count_online(redis, user_id)) > 0
             connection_status[user_id] = is_connected
         except Exception:
             connection_status[user_id] = False

@@ -18,3 +18,4 @@ class Feed(BaseModel):
     # Means user should be near this location to be returned
     nearby_feed: Optional[bool] = False
     feed_type: Optional[Literal["news", "fact_check", "location"]] = "news"
+    activity_level: Optional[int] = 0

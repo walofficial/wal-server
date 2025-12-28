@@ -78,6 +78,7 @@ async def get_nearest_locations_for_feeds(
                 name=nearest.get("name", ""),
                 address=nearest.get("address", ""),
                 location=(nearest.get("lat", 0.0), nearest.get("lng", 0.0)),
+                radius=nearest.get("radius", 300),  # Include radius from DB
             )
         mapping[feed_id] = (bool(doc.get("inside", 0)), location_obj)
 

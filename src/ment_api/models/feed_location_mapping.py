@@ -12,6 +12,7 @@ class Location(BaseModel):
     name: str
     address: str
     location: Tuple[Lat, Lng]
+    radius: float = 300  # Default radius in meters
 
 
 class FeedLocationMapping(BaseModel):

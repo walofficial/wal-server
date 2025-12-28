@@ -117,6 +117,8 @@ async def send_to_device(token, title, message, data=None, client=None):
         "title": title,
         "sound": "default",
         "body": message,
+        # iOS: required for Notification Service Extension to run (Communication Notifications / attachments)
+        "mutableContent": True,
         "data": data,
     }
     logger.debug(f"Sending push notification payload: {payload}")
