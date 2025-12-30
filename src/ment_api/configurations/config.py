@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     pub_sub_translation_subscription_id: str
     pub_sub_media_post_generator_topic_id: str
     pub_sub_media_post_generator_subscription_id: str
+    pub_sub_ai_character_topic_id: str = "ai_character_post_trigger"
+    pub_sub_ai_character_subscription_id: str = "ai_character_post_trigger_subscription"
     scrapable_imedi_news_endpiont: str
     scrapable_publika_news_endpiont: str
     scrapable_1tv_news_endpiont: str

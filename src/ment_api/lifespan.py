@@ -30,6 +30,9 @@ from ment_api.workers.video_processor_worker import process_video_callback
 from ment_api.workers.media_post_generator_worker import (
     process_media_post_generator_callback,
 )
+from ment_api.workers.ai_character_worker import (
+    process_ai_character_callback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +86,7 @@ async def lifespan(local_app: FastAPI):
         video_processor_task,
         translation_task,
         media_post_generator_task,
+        ai_character_task,
     ) = await asyncio.gather(
         initialize_subscriber(
             settings.gcp_project_id,
@@ -132,6 +136,13 @@ async def lifespan(local_app: FastAPI):
             process_media_post_generator_callback,
             True,
         ),
+        initialize_subscriber(
+            settings.gcp_project_id,
+            settings.pub_sub_ai_character_topic_id,
+            settings.pub_sub_ai_character_subscription_id,
+            process_ai_character_callback,
+            True,
+        ),
     )
 
     yield
@@ -149,6 +160,7 @@ async def lifespan(local_app: FastAPI):
         close_subscriber(video_processor_task),
         close_subscriber(translation_task),
         close_subscriber(media_post_generator_task),
+        close_subscriber(ai_character_task),
         cleanup_message_state_task(message_state_task),
         close_mongo_client(),
         redis_service.aclose(),

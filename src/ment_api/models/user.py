@@ -33,3 +33,5 @@ class User(BaseModel):
     preferred_news_feed_id: str = "687960db5051460a7afd6e63"
     preferred_fact_check_feed_id: str = "67bb256786841cb3e7074bcd"
     preferred_content_language: str = "georgian"
+    # Virtual user flag for AI characters
+    is_virtual: bool = False

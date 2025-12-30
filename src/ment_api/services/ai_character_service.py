@@ -1,0 +1,365 @@
+"""
+AI Character Service for chat responses with RAG context.
+
+This service handles AI character chat interactions, using RAG to provide
+contextually relevant responses based on conversation history.
+"""
+
+import logging
+from datetime import datetime, timezone
+from typing import List, Optional
+
+from bson import ObjectId
+
+from ment_api.models.ai_character import AICharacter, AICharacterDetail
+from ment_api.persistence import mongo
+from ment_api.services.ai_character_memory_service import (
+    retrieve_context,
+    store_memory,
+)
+from ment_api.services.external_clients.gemini_client import gemini_client
+
+logger = logging.getLogger(__name__)
+
+# Chat system prompt template
+CHAT_SYSTEM_PROMPT = """შენ ხარ {name}, {personality}.
+
+{chat_personality}
+
+კონტექსტი წინა საუბრებიდან:
+{context}
+
+უპასუხე ბუნებრივად ქართულად. მოკლე პასუხები. არ გაიმეორო მომხმარებლის შეტყობინება."""
+
+
+async def get_character_by_id(character_id: ObjectId) -> Optional[AICharacterDetail]:
+    """Get an AI character by its ObjectId."""
+    doc = await mongo.ai_characters.find_one_by_id(character_id)
+    if doc:
+        return AICharacterDetail.from_mongo(doc)
+    return None
+
+
+async def get_character_by_user_id(user_id: str) -> Optional[AICharacterDetail]:
+    """Get an AI character by its associated user_id."""
+    doc = await mongo.ai_characters.find_one({"user_id": user_id})
+    if doc:
+        return AICharacterDetail.from_mongo(doc)
+    return None
+
+
+async def get_character_doc_by_user_id(user_id: str) -> Optional[dict]:
+    """Get raw AI character document by user_id (for internal use)."""
+    return await mongo.ai_characters.find_one({"user_id": user_id})
+
+
+async def generate_chat_response(
+    character: dict,
+    user_id: str,
+    user_message: str,
+    room_id: Optional[ObjectId] = None,
+) -> str:
+    """
+    Generate an AI character response using RAG context.
+
+    This function:
+    1. Retrieves relevant memories from past conversations
+    2. Builds a context-enhanced prompt
+    3. Generates a response using Gemini
+    4. Stores both the user message and AI response as memories
+
+    Args:
+        character: The AI character document
+        user_id: The ID of the user chatting
+        user_message: The user's message text
+        room_id: Optional chat room ObjectId
+
+    Returns:
+        The AI character's response text
+    """
+    character_id = character["_id"]
+
+    try:
+        # 1. Retrieve relevant context using vector search
+        memories = await retrieve_context(
+            character_id=character_id,
+            user_id=user_id,
+            query=user_message,
+            limit=10,
+        )
+
+        # 2. Build context string from retrieved memories
+        context_parts = []
+        for mem in memories:
+            prefix = "[გლობალური]" if mem.is_global else ""
+            role_label = "მომხმარებელი" if mem.role == "user" else character["name"]
+            context_parts.append(f"{prefix} {role_label}: {mem.content}")
+
+        context = "\n".join(context_parts) if context_parts else "პირველი საუბარი"
+
+        # 3. Build the system prompt with context
+        system_prompt = CHAT_SYSTEM_PROMPT.format(
+            name=character["name"],
+            personality=character.get("personality", ""),
+            chat_personality=character.get("chat_personality", ""),
+            context=context,
+        )
+
+        # 4. Generate response using Gemini
+        response = await gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                {"role": "user", "parts": [{"text": system_prompt}]},
+                {"role": "user", "parts": [{"text": user_message}]},
+            ],
+        )
+
+        ai_response = response.text.strip()
+
+        # 5. Store both messages in memory for future context
+        await store_memory(
+            character_id=character_id,
+            user_id=user_id,
+            content=user_message,
+            role="user",
+            room_id=room_id,
+        )
+
+        await store_memory(
+            character_id=character_id,
+            user_id=user_id,
+            content=ai_response,
+            role="assistant",
+            room_id=room_id,
+        )
+
+        logger.info(
+            "Generated AI character chat response",
+            extra={
+                "json_fields": {
+                    "operation": "generate_chat_response",
+                    "character_id": str(character_id),
+                    "character_name": character["name"],
+                    "user_id": user_id,
+                    "context_memories": len(memories),
+                    "response_length": len(ai_response),
+                },
+                "labels": {"component": "ai_character_service"},
+            },
+        )
+
+        return ai_response
+
+    except Exception as e:
+        logger.error(
+            f"Failed to generate chat response: {e}",
+            extra={
+                "json_fields": {
+                    "operation": "generate_chat_response",
+                    "character_id": str(character_id),
+                    "error": str(e),
+                },
+                "labels": {"component": "ai_character_service", "severity": "high"},
+            },
+        )
+        # Return a fallback response on error
+        return "ბოდიში, ამჟამად ვერ ვპასუხობ. სცადეთ მოგვიანებით."
+
+
+async def create_ai_character(
+    name: str,
+    personality: str,
+    post_instructions: str,
+    chat_personality: str,
+    user_id: str,
+    allowed_feed_ids: list[ObjectId],
+    face_images: list[str] = None,
+    body_reference_images: list[str] = None,
+    active_hours: list[int] = None,
+    max_posts_per_day: int = 3,
+    chat_enabled: bool = True,
+) -> ObjectId:
+    """
+    Create a new AI character document.
+
+    Args:
+        name: Character display name
+        personality: Brief personality description
+        post_instructions: System prompt for post generation
+        chat_personality: System prompt for chat
+        user_id: Associated user's external_user_id
+        allowed_feed_ids: List of feed ObjectIds where character can post
+        face_images: List of face image URLs
+        body_reference_images: List of body reference image URLs
+        active_hours: List of hours (0-23) when character is active
+        max_posts_per_day: Maximum posts per day
+        chat_enabled: Whether chat is enabled
+
+    Returns:
+        The ObjectId of the created character
+    """
+    now = datetime.now(timezone.utc)
+
+    character_doc = {
+        "user_id": user_id,
+        "name": name,
+        "personality": personality,
+        "post_instructions": post_instructions,
+        "chat_personality": chat_personality,
+        "face_images": face_images or [],
+        "body_reference_images": body_reference_images or [],
+        "allowed_feed_ids": allowed_feed_ids,
+        "timezone": "Asia/Tbilisi",
+        "active_hours": active_hours
+        or [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+        "max_posts_per_day": max_posts_per_day,
+        "posts_today": 0,
+        "last_post_reset": now,
+        "chat_enabled": chat_enabled,
+        "is_active": True,
+        "created_at": now,
+    }
+
+    result = await mongo.ai_characters.insert_one(character_doc)
+
+    logger.info(
+        "Created AI character",
+        extra={
+            "json_fields": {
+                "operation": "create_ai_character",
+                "character_id": str(result.inserted_id),
+                "user_id": user_id,
+                "name": name,
+            },
+            "labels": {"component": "ai_character_service"},
+        },
+    )
+
+    return result.inserted_id
+
+
+async def get_active_characters(current_hour: int) -> List[AICharacterDetail]:
+    """
+    Get all active AI characters that can post at the current hour.
+
+    Args:
+        current_hour: The current hour in Tbilisi time (0-23)
+
+    Returns:
+        List of active character details
+    """
+    docs = await mongo.ai_characters.find_all(
+        {
+            "is_active": True,
+            "active_hours": current_hour,
+            "$expr": {"$lt": ["$posts_today", "$max_posts_per_day"]},
+        }
+    )
+    return [AICharacterDetail.from_mongo(doc) for doc in docs]
+
+
+async def get_active_characters_raw(current_hour: int) -> List[dict]:
+    """
+    Get all active AI characters as raw documents (for worker use).
+
+    Args:
+        current_hour: The current hour in Tbilisi time (0-23)
+
+    Returns:
+        List of active character documents (raw dicts)
+    """
+    return await mongo.ai_characters.find_all(
+        {
+            "is_active": True,
+            "active_hours": current_hour,
+            "$expr": {"$lt": ["$posts_today", "$max_posts_per_day"]},
+        }
+    )
+
+
+async def get_all_characters(only_active: bool = True) -> List[AICharacterDetail]:
+    """
+    Get all AI characters.
+
+    Args:
+        only_active: If True, only return active characters
+
+    Returns:
+        List of character details
+    """
+    query = {"is_active": True} if only_active else {}
+    docs = await mongo.ai_characters.find_all(query)
+    return [AICharacterDetail.from_mongo(doc) for doc in docs]
+
+
+async def increment_post_count(character_id: ObjectId) -> None:
+    """Increment the daily post count for a character."""
+    await mongo.ai_characters.update_one(
+        {"_id": character_id},
+        {"$inc": {"posts_today": 1}},
+    )
+
+
+async def reset_daily_post_counts() -> int:
+    """
+    Reset daily post counts for all characters.
+    Should be called once per day at midnight Tbilisi time.
+
+    Returns:
+        Number of characters reset
+    """
+    result = await mongo.ai_characters.update_many(
+        {"posts_today": {"$gt": 0}},
+        {
+            "$set": {
+                "posts_today": 0,
+                "last_post_reset": datetime.now(timezone.utc),
+            }
+        },
+    )
+
+    logger.info(
+        "Reset daily post counts",
+        extra={
+            "json_fields": {
+                "operation": "reset_daily_post_counts",
+                "modified_count": result.modified_count,
+            },
+            "labels": {"component": "ai_character_service"},
+        },
+    )
+
+    return result.modified_count
+
+
+async def update_character(
+    character_id: ObjectId,
+    updates: dict,
+) -> bool:
+    """
+    Update an AI character's fields.
+
+    Args:
+        character_id: The character's ObjectId
+        updates: Dictionary of fields to update
+
+    Returns:
+        True if updated, False otherwise
+    """
+    result = await mongo.ai_characters.update_one(
+        {"_id": character_id},
+        {"$set": updates},
+    )
+
+    return result.modified_count > 0
+
+
+async def deactivate_character(character_id: ObjectId) -> bool:
+    """Deactivate an AI character."""
+    return await update_character(character_id, {"is_active": False})
+
+
+async def activate_character(character_id: ObjectId) -> bool:
+    """Activate an AI character."""
+    return await update_character(character_id, {"is_active": True})
+

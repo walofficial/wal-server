@@ -116,6 +116,12 @@ fact_checks = BaseMongo("fact_checks")
 fact_check_ratings = BaseMongo("fact_check_ratings")
 external_articles = BaseMongo("external_articles")
 
+# AI Character collections
+ai_characters = BaseMongo("ai_characters")
+ai_character_memories = BaseMongo("ai_character_memories")
+location_assets = BaseMongo("location_assets")
+ai_batch_jobs = BaseMongo("ai_batch_jobs")
+
 
 async def initialize_db() -> None:
     logger.info(f"Initializing database: {mongo_client.db}")
@@ -224,6 +230,31 @@ async def initialize_db() -> None:
                 IndexModel([("feed_id", ASCENDING)]),
             ]
         ),
+        # AI Character indexes
+        mongo_client.db["ai_characters"].create_indexes(
+            [
+                IndexModel([("user_id", ASCENDING)], unique=True),
+                IndexModel([("is_active", ASCENDING)]),
+                IndexModel([("allowed_feed_ids", ASCENDING)]),
+            ]
+        ),
+        mongo_client.db["ai_character_memories"].create_indexes(
+            [
+                IndexModel([("character_id", ASCENDING), ("user_id", ASCENDING)]),
+                IndexModel([("character_id", ASCENDING), ("is_global", ASCENDING)]),
+                IndexModel([("created_at", DESCENDING)]),
+            ]
+        ),
+        mongo_client.db["location_assets"].create_index(
+            [("feed_id", ASCENDING)], unique=True
+        ),
+        mongo_client.db["ai_batch_jobs"].create_indexes(
+            [
+                IndexModel([("batch_job_name", ASCENDING)], unique=True),
+                IndexModel([("status", ASCENDING)]),
+                IndexModel([("created_at", DESCENDING)]),
+            ]
+        ),
     )
 
     # # Ensure Atlas Search index on verifications collection
@@ -291,3 +322,49 @@ async def initialize_db() -> None:
 
     # except Exception as e:
     #     logger.warning(f"Failed to ensure vector search index: {e}")
+
+    # Create vector search index for AI character memories (RAG)
+    try:
+        search_indexes_cursor = await mongo_client.db[
+            "ai_character_memories"
+        ].list_search_indexes()
+        existing_search_indexes = await search_indexes_cursor.to_list(length=None)
+        existing_index_names = [idx.get("name") for idx in existing_search_indexes]
+
+        if "memory_vector_index" not in existing_index_names:
+            await mongo_client.db["ai_character_memories"].create_search_index(
+                {
+                    "name": "memory_vector_index",
+                    "type": "vectorSearch",
+                    "definition": {
+                        "fields": [
+                            {
+                                "type": "vector",
+                                "path": "embedding",
+                                "numDimensions": 768,
+                                "similarity": "cosine",
+                            },
+                            {
+                                "type": "filter",
+                                "path": "character_id",
+                            },
+                            {
+                                "type": "filter",
+                                "path": "user_id",
+                            },
+                            {
+                                "type": "filter",
+                                "path": "is_global",
+                            },
+                        ]
+                    },
+                }
+            )
+            logger.info(
+                "Created vector search index 'memory_vector_index' on 'ai_character_memories' collection"
+            )
+        else:
+            logger.info("Vector search index 'memory_vector_index' already exists")
+
+    except Exception as e:
+        logger.warning(f"Failed to ensure vector search index on 'ai_character_memories': {e}")

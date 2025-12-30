@@ -15,6 +15,7 @@ from ment_api.lifespan import lifespan
 from ment_api.models.feed import Feed
 from ment_api.persistence import mongo
 from ment_api.routes import (
+    ai_characters,
     comments,
     feed,
     feeds,
@@ -22,6 +23,7 @@ from ment_api.routes import (
     geofence,
     live_user_actions,
     livekit,
+    location_assets,
     notifications,
     reactions,
     space,
@@ -157,6 +159,8 @@ app.include_router(space.router)
 app.include_router(comments.router)
 app.include_router(reactions.router)
 app.include_router(geofence.router)
+app.include_router(ai_characters.router)
+app.include_router(location_assets.router)
 
 
 class GetCountryResponse(BaseModel):

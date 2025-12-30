@@ -1111,6 +1111,82 @@ async def get_single_feed(
     return Feed(**feed)
 
 
+class AllFeedsResponse(BaseModel):
+    feeds: List[Feed]
+    total: int
+
+
+@router.get("/all", response_model=AllFeedsResponse, operation_id="get_all_feeds")
+async def get_all_feeds(
+    feed_type: Annotated[Optional[str], Query(description="Filter by feed type (news, fact_check, location)")] = None,
+    include_hidden: Annotated[bool, Query(description="Include hidden feeds")] = False,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+):
+    """
+    Get all feeds with optional filtering.
+    
+    Args:
+        feed_type: Filter by feed type (news, fact_check, location)
+        include_hidden: Whether to include hidden feeds (default: False)
+        limit: Maximum number of feeds to return (default: 100, max: 500)
+    
+    Returns:
+        List of all feeds matching the filters
+    """
+    # Build query filter
+    query_filter: Dict = {}
+    
+    if feed_type:
+        query_filter["feed_type"] = feed_type
+    
+    if not include_hidden:
+        query_filter["$or"] = [
+            {"hidden": {"$exists": False}},
+            {"hidden": False},
+        ]
+    
+    # Get feeds with projection
+    pipeline = [
+        {"$match": query_filter},
+        {
+            "$project": {
+                "_id": 1,
+                "feed_title": 1,
+                "feed_category_id": 1,
+                "display_name": 1,
+                "feed_location": 1,
+                "feed_locations": 1,
+                "hidden": 1,
+                "nearby_feed": 1,
+                "feed_type": 1,
+                "no_restrictions": 1,
+                "feed_country_code": 1,
+                "activity_level": 1,
+            }
+        },
+        {"$sort": {"display_name": 1}},
+        {"$limit": limit},
+    ]
+    
+    feeds = await mongo.feeds.aggregate(pipeline)
+    feeds_list = [Feed(**feed) for feed in feeds]
+    
+    logger.info(
+        "Retrieved all feeds",
+        extra={
+            "json_fields": {
+                "feed_count": len(feeds_list),
+                "feed_type_filter": feed_type,
+                "include_hidden": include_hidden,
+                "operation": "get_all_feeds",
+            },
+            "labels": {"component": "feeds"},
+        },
+    )
+    
+    return AllFeedsResponse(feeds=feeds_list, total=len(feeds_list))
+
+
 class GoLiveRequest(BaseModel):
     feed_id: CustomObjectId
 

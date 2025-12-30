@@ -8,12 +8,14 @@ class ChatMessage(BaseModel):
     author_id: str
     room_id: CustomObjectId
     recipient_id: str
-    encrypted_content: Optional[str]
-    nonce: Optional[str]
+    encrypted_content: Optional[str] = None
+    nonce: Optional[str] = None
     message_state: str
     sent_date: Optional[str] = None
     # FE passes it sometimes
     temporary_id: Optional[str] = None
+    # Plain text content for virtual users (AI characters) - no encryption
+    plain_content: Optional[str] = None
 
     def __init__(self, **data):
         super().__init__(**data)

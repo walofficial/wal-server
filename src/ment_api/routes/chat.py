@@ -464,18 +464,22 @@ async def heartbeat(sid: str) -> None:
 @sio.event
 async def private_message(sid: str, data: Dict[str, str]) -> None:
     recipient = data["recipient"]
-    encrypted_content = data["encrypted_content"]
-    nonce = data["nonce"]
     temporary_id = data["temporary_id"]
     room_id = data["room_id"]
 
+    # Support both encrypted and plain content for virtual users
+    encrypted_content = data.get("encrypted_content")
+    nonce = data.get("nonce")
+    plain_content = data.get("plain_content")
+
     logger.info(
-        "Forwarding encrypted message",
+        "Forwarding message",
         extra={
             "json_fields": {
                 "sid": sid,
                 "recipient": recipient,
                 "room_id": room_id,
+                "is_plain": plain_content is not None,
                 "operation": "private_message_forward",
             },
             "labels": {"component": "chat_messages"},
@@ -501,26 +505,83 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
             "labels": {"component": "chat_presence"},
         },
     )
+
+    # Check if recipient is a virtual user (AI character)
+    recipient_user = await mongo.users.find_one({"external_user_id": recipient})
+    is_virtual_recipient = recipient_user and recipient_user.get("is_virtual", False)
+
+    # If messaging a virtual user, generate AI response
+    if is_virtual_recipient and plain_content:
+        from ment_api.services.ai_character_service import (
+            generate_chat_response,
+            get_character_by_user_id,
+        )
+
+        character = await get_character_by_user_id(recipient)
+        if character and character.get("chat_enabled", True):
+            # Generate AI response
+            ai_response = await generate_chat_response(
+                character=character,
+                user_id=sender,
+                user_message=plain_content,
+                room_id=ObjectId(room_id),
+            )
+
+            # Emit AI response back to sender
+            sender_info = await redis.hgetall(user_info_key(recipient)) if recipient else {}
+            await sio.emit(
+                "private_message",
+                {
+                    "sender": recipient,
+                    "sender_username": character.get("name", ""),
+                    "sender_profile_picture": sender_info.get("user_profile_picture", ""),
+                    "plain_content": ai_response,
+                    "room_id": room_id,
+                    "temporary_id": f"ai_{temporary_id}",
+                },
+                room=f"user:{sender}",
+            )
+
+            # Store AI response message
+            await mongo.chat_messages.insert_one(
+                {
+                    "author_id": recipient,
+                    "recipient_id": sender,
+                    "room_id": ObjectId(room_id),
+                    "plain_content": ai_response,
+                    "message_state": MessageState.SENT,
+                }
+            )
+
+    # Emit to recipient if online
     if is_online:
         # Get sender info from cache (fallback to empty strings)
         sender_info = await redis.hgetall(user_info_key(sender)) if sender else {}
         sender_username = sender_info.get("user_username", "")
         sender_profile_picture = sender_info.get("user_profile_picture", "")
+
+        message_payload = {
+            "sender": sender,
+            "sender_username": sender_username,
+            "sender_profile_picture": sender_profile_picture,
+            "room_id": room_id,
+            "temporary_id": temporary_id,
+        }
+
+        # Include either encrypted or plain content
+        if plain_content is not None:
+            message_payload["plain_content"] = plain_content
+        else:
+            message_payload["encrypted_content"] = encrypted_content
+            message_payload["nonce"] = nonce
+
         await sio.emit(
             "private_message",
-            {
-                "sender": sender,
-                "sender_username": sender_username,
-                "sender_profile_picture": sender_profile_picture,
-                "encrypted_content": encrypted_content,
-                "nonce": nonce,
-                "room_id": room_id,
-                "temporary_id": temporary_id,
-            },
+            message_payload,
             room=f"user:{recipient}",
         )
     else:
-        # Recipient is offline - send notification with encrypted content
+        # Recipient is offline - send notification
         # Get sender username from cache first, fallback to DB
         sender_info = await redis.hgetall(user_info_key(sender)) if sender else {}
         message_title = sender_info.get("user_username")
@@ -541,16 +602,21 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
         )
 
     # Store message asynchronously in background
-    await mongo.chat_messages.insert_one(
-        {
-            "author_id": sender,
-            "recipient_id": recipient,
-            "room_id": ObjectId(room_id),
-            "encrypted_content": encrypted_content,
-            "nonce": nonce,
-            "message_state": MessageState.SENT,
-        }
-    )
+    message_doc = {
+        "author_id": sender,
+        "recipient_id": recipient,
+        "room_id": ObjectId(room_id),
+        "message_state": MessageState.SENT,
+    }
+
+    # Store either encrypted or plain content
+    if plain_content is not None:
+        message_doc["plain_content"] = plain_content
+    else:
+        message_doc["encrypted_content"] = encrypted_content
+        message_doc["nonce"] = nonce
+
+    await mongo.chat_messages.insert_one(message_doc)
 
 
 @sio.event
