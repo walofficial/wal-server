@@ -20,6 +20,8 @@ from ment_api.models.ai_character import (
     LocationAssetDetail,
     LocationAssetListResponse,
     LocationAssetUploadResponse,
+    UpdateLocationAssetRequest,
+    UpdateLocationAssetResponse,
 )
 from ment_api.persistence import mongo
 from ment_api.services.external_clients.cloud_flare_client import upload_image
@@ -189,6 +191,67 @@ async def list_location_assets_endpoint(
     assets = [LocationAssetDetail.from_mongo(doc) for doc in docs[:limit]]
 
     return LocationAssetListResponse(assets=assets, total=len(docs))
+
+
+@router.put(
+    "/{feed_id}",
+    response_model=UpdateLocationAssetResponse,
+    operation_id="update_location_assets",
+)
+async def update_location_assets_endpoint(
+    feed_id: str,
+    update_request: UpdateLocationAssetRequest,
+) -> UpdateLocationAssetResponse:
+    """
+    Update location assets for a feed.
+
+    Only provided fields will be updated (partial update).
+    """
+    try:
+        feed_object_id = ObjectId(feed_id)
+
+        # Verify asset exists
+        existing = await mongo.location_assets.find_one({"feed_id": feed_object_id})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Location assets not found")
+
+        # Build update document
+        update_data: dict = {"updated_at": datetime.now(timezone.utc)}
+
+        if update_request.feed_name is not None:
+            update_data["feed_name"] = update_request.feed_name
+
+        if update_request.description is not None:
+            update_data["description"] = update_request.description
+
+        # Apply update
+        await mongo.location_assets.update_one(
+            {"_id": existing["_id"]},
+            {"$set": update_data},
+        )
+
+        logger.info(
+            "Updated location assets",
+            extra={
+                "json_fields": {
+                    "operation": "update_location_assets",
+                    "feed_id": feed_id,
+                    "updated_fields": list(update_data.keys()),
+                },
+                "labels": {"component": "location_assets_route"},
+            },
+        )
+
+        return UpdateLocationAssetResponse(
+            status="updated",
+            feed_id=feed_id,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update location assets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete(

@@ -429,6 +429,41 @@ class AddMemoryResponse(BaseModel):
     status: str
 
 
+class UpdateAICharacterRequest(BaseModel):
+    """Request model for updating an AI character."""
+
+    name: Optional[str] = None
+    personality: Optional[str] = None
+    post_instructions: Optional[str] = None
+    chat_personality: Optional[str] = None
+    allowed_feed_ids: Optional[List[str]] = None
+    active_hours: Optional[List[int]] = None
+    max_posts_per_day: Optional[int] = None
+    chat_enabled: Optional[bool] = None
+    is_active: Optional[bool] = None
+
+
+class UpdateAICharacterResponse(BaseModel):
+    """Response for updating an AI character."""
+
+    status: str
+    character_id: str
+
+
+class UpdateLocationAssetRequest(BaseModel):
+    """Request model for updating location assets."""
+
+    feed_name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class UpdateLocationAssetResponse(BaseModel):
+    """Response for updating location assets."""
+
+    status: str
+    feed_id: str
+
+
 class BatchCompleteResponse(BaseModel):
     """Response for batch completion."""
 

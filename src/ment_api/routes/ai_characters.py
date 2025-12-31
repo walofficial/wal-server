@@ -32,6 +32,8 @@ from ment_api.models.ai_character import (
     MemoryDetail,
     MemoryListResponse,
     PollBatchJobsResponse,
+    UpdateAICharacterRequest,
+    UpdateAICharacterResponse,
 )
 from ment_api.persistence import mongo
 from ment_api.services.ai_character_memory_service import (
@@ -211,6 +213,136 @@ async def get_character_endpoint(character_id: str) -> AICharacterDetail:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.put(
+    "/{character_id}",
+    response_model=UpdateAICharacterResponse,
+    operation_id="update_ai_character",
+)
+async def update_character_endpoint(
+    character_id: str,
+    update_request: UpdateAICharacterRequest,
+) -> UpdateAICharacterResponse:
+    """
+    Update an existing AI character.
+
+    Only provided fields will be updated (partial update).
+    """
+    try:
+        character_obj_id = ObjectId(character_id)
+        
+        # Verify character exists
+        existing = await mongo.ai_characters.find_one_by_id(character_obj_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Character not found")
+
+        # Build update document with only provided fields
+        update_data: dict = {}
+        
+        if update_request.name is not None:
+            update_data["name"] = update_request.name
+            # Also update the linked user's username
+            await mongo.users.update_one(
+                {"external_user_id": existing["user_id"]},
+                {"$set": {"username": update_request.name}},
+            )
+        
+        if update_request.personality is not None:
+            update_data["personality"] = update_request.personality
+            # Also update user bio
+            await mongo.users.update_one(
+                {"external_user_id": existing["user_id"]},
+                {"$set": {"bio": update_request.personality[:200]}},
+            )
+        
+        if update_request.post_instructions is not None:
+            update_data["post_instructions"] = update_request.post_instructions
+        
+        if update_request.chat_personality is not None:
+            update_data["chat_personality"] = update_request.chat_personality
+        
+        if update_request.allowed_feed_ids is not None:
+            new_feed_ids = [ObjectId(fid) for fid in update_request.allowed_feed_ids]
+            update_data["allowed_feed_ids"] = new_feed_ids
+            
+            # Update live_users presence
+            old_feed_ids = set(str(fid) for fid in existing.get("allowed_feed_ids", []))
+            new_feed_ids_str = set(update_request.allowed_feed_ids)
+            
+            # Remove from feeds no longer allowed
+            feeds_to_remove = old_feed_ids - new_feed_ids_str
+            if feeds_to_remove:
+                await mongo.live_users.delete_many({
+                    "author_id": existing["user_id"],
+                    "feed_id": {"$in": [ObjectId(fid) for fid in feeds_to_remove]},
+                })
+            
+            # Add to new feeds
+            feeds_to_add = new_feed_ids_str - old_feed_ids
+            far_future = datetime.now(timezone.utc) + timedelta(days=365 * 100)
+            for feed_id in feeds_to_add:
+                await mongo.live_users.insert_one({
+                    "author_id": existing["user_id"],
+                    "feed_id": ObjectId(feed_id),
+                    "expiration_date": far_future,
+                    "created_at": datetime.now(timezone.utc),
+                })
+        
+        if update_request.active_hours is not None:
+            update_data["active_hours"] = update_request.active_hours
+        
+        if update_request.max_posts_per_day is not None:
+            update_data["max_posts_per_day"] = update_request.max_posts_per_day
+        
+        if update_request.chat_enabled is not None:
+            update_data["chat_enabled"] = update_request.chat_enabled
+        
+        if update_request.is_active is not None:
+            update_data["is_active"] = update_request.is_active
+
+        if not update_data:
+            return UpdateAICharacterResponse(
+                status="no_changes",
+                character_id=character_id,
+            )
+
+        # Apply update
+        await mongo.ai_characters.update_one(
+            {"_id": character_obj_id},
+            {"$set": update_data},
+        )
+
+        logger.info(
+            "Updated AI character",
+            extra={
+                "json_fields": {
+                    "operation": "update_ai_character",
+                    "character_id": character_id,
+                    "updated_fields": list(update_data.keys()),
+                },
+                "labels": {"component": "ai_characters_route"},
+            },
+        )
+
+        return UpdateAICharacterResponse(
+            status="updated",
+            character_id=character_id,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to update AI character: {e}",
+            extra={
+                "json_fields": {
+                    "operation": "update_ai_character",
+                    "character_id": character_id,
+                    "error": str(e),
+                },
+                "labels": {"component": "ai_characters_route", "severity": "high"},
+            },
+        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 
