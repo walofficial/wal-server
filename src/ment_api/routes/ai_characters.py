@@ -29,6 +29,8 @@ from ment_api.models.ai_character import (
     CreateLocationAssetRequest,
     ExecutePostRequest,
     ExecutePostResponse,
+    GoLiveRequest,
+    GoLiveResponse,
     MemoryDetail,
     MemoryListResponse,
     PollBatchJobsResponse,
@@ -125,10 +127,10 @@ async def create_character_endpoint(
                 else [],
                 "is_in_waitlist": False,
                 "is_virtual": True,  # Mark as virtual user
-                "date_of_birth": datetime.now(timezone.utc) - timedelta(days=365 * 10),
+                "date_of_birth": "01/02/2000",
                 "interests": [],
                 "gender": "female",
-                "bio": personality[:200] if personality else None,
+                "bio": personality
             }
         )
 
@@ -344,6 +346,109 @@ async def update_character_endpoint(
         )
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.post(
+    "/{character_id}/go-live",
+    response_model=GoLiveResponse,
+    operation_id="ai_character_go_live",
+)
+async def go_live_endpoint(
+    character_id: str,
+    request: GoLiveRequest,
+) -> GoLiveResponse:
+    """
+    Make an AI character go live at a specific feed.
+
+    This endpoint:
+    1. Verifies the character exists
+    2. Verifies the feed exists
+    3. Checks if the character is already live at the feed
+    4. Creates a live_users entry with far future expiration
+    5. Optionally adds the feed to allowed_feed_ids if not present
+    """
+    try:
+        character_obj_id = ObjectId(character_id)
+        feed_obj_id = ObjectId(request.feed_id)
+
+        # Verify character exists
+        character = await mongo.ai_characters.find_one_by_id(character_obj_id)
+        if not character:
+            raise HTTPException(status_code=404, detail="Character not found")
+
+        # Verify feed exists
+        feed = await mongo.feeds.find_one({"_id": feed_obj_id})
+        if not feed:
+            raise HTTPException(status_code=404, detail="Feed not found")
+
+        user_id = character["user_id"]
+
+        # Check if already live at this feed
+        existing_live = await mongo.live_users.find_one({
+            "author_id": user_id,
+            "feed_id": feed_obj_id,
+        })
+
+        if existing_live:
+            return GoLiveResponse(
+                status="already_live",
+                character_id=character_id,
+                feed_id=request.feed_id,
+                message=f"Character is already live at feed '{feed.get('feed_title', request.feed_id)}'",
+            )
+
+        # Create live_users entry with far future expiration
+        far_future = datetime.now(timezone.utc) + timedelta(days=365 * 100)  # 100 years
+        await mongo.live_users.insert_one({
+            "author_id": user_id,
+            "feed_id": feed_obj_id,
+            "expiration_date": far_future,
+            "created_at": datetime.now(timezone.utc),
+        })
+
+        # Add feed to allowed_feed_ids if not present
+        current_feed_ids = character.get("allowed_feed_ids", [])
+        if feed_obj_id not in current_feed_ids:
+            await mongo.ai_characters.update_one(
+                {"_id": character_obj_id},
+                {"$addToSet": {"allowed_feed_ids": feed_obj_id}},
+            )
+
+        logger.info(
+            "AI character went live at feed",
+            extra={
+                "json_fields": {
+                    "operation": "go_live",
+                    "character_id": character_id,
+                    "feed_id": request.feed_id,
+                    "user_id": user_id,
+                },
+                "labels": {"component": "ai_characters_route"},
+            },
+        )
+
+        return GoLiveResponse(
+            status="live",
+            character_id=character_id,
+            feed_id=request.feed_id,
+            message=f"Character is now live at feed '{feed.get('feed_title', request.feed_id)}'",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to go live: {e}",
+            extra={
+                "json_fields": {
+                    "operation": "go_live",
+                    "character_id": character_id,
+                    "feed_id": request.feed_id,
+                    "error": str(e),
+                },
+                "labels": {"component": "ai_characters_route", "severity": "high"},
+            },
+        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================

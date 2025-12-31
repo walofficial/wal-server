@@ -495,3 +495,23 @@ class TriggerPostsResponse(BaseModel):
     posts_count: Optional[int] = None
     hour: Optional[int] = None
 
+
+# ============================================================================
+# Go Live Models
+# ============================================================================
+
+
+class GoLiveRequest(BaseModel):
+    """Request model for making an AI character go live at a specific feed."""
+
+    feed_id: str
+
+
+class GoLiveResponse(BaseModel):
+    """Response for go live operation."""
+
+    status: str
+    character_id: str
+    feed_id: str
+    message: Optional[str] = None
+
