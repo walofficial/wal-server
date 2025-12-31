@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -22,6 +24,10 @@ from ment_api.persistence import mongo, mongo_client
 from ment_api.services.notification_service import send_notification
 from ment_api.services.redis_service import get_async_redis_client
 from ment_api.workers.message_state_worker import message_state_channel
+
+# AI Message Buffer Configuration
+AI_MESSAGE_DEBOUNCE_SECONDS = 4  # Wait time before AI responds
+AI_MESSAGE_BUFFER_TTL = 120  # Safety TTL for Redis cleanup
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +103,137 @@ async def _touch_presence(redis, user_id: str, sid: str) -> None:
     pipe.expire(key, PRESENCE_SID_TTL_SECONDS)
     pipe.zremrangebyscore(key, 0, min_score - 1)
     await pipe.execute()
+
+
+# ============================================================================
+# AI Message Buffer Functions (for scalable message batching)
+# ============================================================================
+
+
+def ai_buffer_key(room_id: str, user_id: str) -> str:
+    """Redis key for buffered messages list."""
+    return f"ai_buffer:{room_id}:{user_id}"
+
+
+def ai_buffer_ts_key(room_id: str, user_id: str) -> str:
+    """Redis key for last message timestamp."""
+    return f"ai_buffer_ts:{room_id}:{user_id}"
+
+
+def ai_buffer_lock_key(room_id: str, user_id: str) -> str:
+    """Redis key for distributed processing lock."""
+    return f"ai_buffer_lock:{room_id}:{user_id}"
+
+
+async def buffer_ai_message(
+    redis,
+    room_id: str,
+    sender_id: str,
+    recipient_id: str,
+    message: str,
+) -> None:
+    """
+    Buffer an incoming message for batched AI response.
+    
+    This function:
+    1. Adds message to the buffer list
+    2. Updates last message timestamp
+    3. Tracks active buffer for efficient scanning
+    """
+    buffer_key = ai_buffer_key(room_id, sender_id)
+    ts_key = ai_buffer_ts_key(room_id, sender_id)
+    
+    # Store message with metadata
+    message_data = json.dumps({
+        "content": message,
+        "timestamp": time.time(),
+        "recipient_id": recipient_id,
+    })
+    
+    pipe = redis.pipeline()
+    # Add message to buffer list
+    pipe.rpush(buffer_key, message_data)
+    pipe.expire(buffer_key, AI_MESSAGE_BUFFER_TTL)
+    # Update last message timestamp
+    pipe.set(ts_key, str(time.time()), ex=AI_MESSAGE_BUFFER_TTL)
+    # Track active buffer for efficient scanning
+    pipe.sadd("ai_active_buffers", f"{room_id}:{sender_id}")
+    await pipe.execute()
+
+
+async def get_active_ai_buffers(redis) -> set:
+    """Get all active AI message buffer keys."""
+    members = await redis.smembers("ai_active_buffers")
+    return members if members else set()
+
+
+async def get_buffer_last_timestamp(redis, room_id: str, user_id: str) -> Optional[float]:
+    """Get the timestamp of the last buffered message."""
+    ts_key = ai_buffer_ts_key(room_id, user_id)
+    ts = await redis.get(ts_key)
+    return float(ts) if ts else None
+
+
+async def acquire_buffer_lock(redis, room_id: str, user_id: str) -> bool:
+    """Try to acquire distributed lock for buffer processing."""
+    lock_key = ai_buffer_lock_key(room_id, user_id)
+    # NX = only set if not exists, EX = expire after 10 seconds
+    result = await redis.set(lock_key, "1", nx=True, ex=10)
+    return result is not None
+
+
+async def release_buffer_lock(redis, room_id: str, user_id: str) -> None:
+    """Release the distributed lock."""
+    lock_key = ai_buffer_lock_key(room_id, user_id)
+    await redis.delete(lock_key)
+
+
+async def get_and_clear_buffer(redis, room_id: str, user_id: str) -> List[str]:
+    """
+    Atomically get all buffered messages and clear the buffer.
+    
+    Returns list of message contents.
+    """
+    buffer_key = ai_buffer_key(room_id, user_id)
+    ts_key = ai_buffer_ts_key(room_id, user_id)
+    
+    # Get all messages
+    messages_raw = await redis.lrange(buffer_key, 0, -1)
+    
+    if not messages_raw:
+        return []
+    
+    # Parse messages
+    messages = []
+    for msg_raw in messages_raw:
+        try:
+            msg_data = json.loads(msg_raw)
+            messages.append(msg_data["content"])
+        except (json.JSONDecodeError, KeyError):
+            continue
+    
+    # Clear buffer atomically
+    pipe = redis.pipeline()
+    pipe.delete(buffer_key)
+    pipe.delete(ts_key)
+    pipe.srem("ai_active_buffers", f"{room_id}:{user_id}")
+    await pipe.execute()
+    
+    return messages
+
+
+async def get_buffer_recipient_id(redis, room_id: str, user_id: str) -> Optional[str]:
+    """Get the recipient (AI character) ID from buffer."""
+    buffer_key = ai_buffer_key(room_id, user_id)
+    # Get first message to extract recipient_id
+    first_msg = await redis.lindex(buffer_key, 0)
+    if first_msg:
+        try:
+            msg_data = json.loads(first_msg)
+            return msg_data.get("recipient_id")
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return None
 
 
 async def broadcast_user_public_key(user_id: str, public_key: str) -> None:
@@ -198,6 +335,16 @@ async def delayed_send_chat_notification(
             # Consider not sending encrypted payload over push
             notification_data["encryptedContent"] = encrypted_content
             notification_data["nonce"] = nonce
+        logger.info(
+            "Sending notification",
+            extra={
+                "json_fields": {
+                    "user_id": user_id,
+                    "room_id": room_id,
+                    "operation": "send_chat_notification",
+                },
+            },
+        )
         await send_notification(user_id, message_title, message, data=notification_data)
         await mongo.notifications.insert_one(
             {"user_id": user_id, "timestamp": datetime.utcnow()}
@@ -510,51 +657,35 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
     recipient_user = await mongo.users.find_one({"external_user_id": recipient})
     is_virtual_recipient = recipient_user and recipient_user.get("is_virtual", False)
 
-    # If messaging a virtual user, generate AI response
+    # If messaging a virtual user, buffer the message for batched AI response
     if is_virtual_recipient and plain_content:
-        from ment_api.services.ai_character_service import (
-            generate_chat_response,
-            get_character_by_user_id,
-        )
+        from ment_api.services.ai_character_service import get_character_doc_by_user_id
 
-        character = await get_character_by_user_id(recipient)
+        character = await get_character_doc_by_user_id(recipient)
         if character and character.get("chat_enabled", True):
-            # Generate AI response
-            ai_response = await generate_chat_response(
-                character=character,
-                user_id=sender,
-                user_message=plain_content,
-                room_id=ObjectId(room_id),
+            # Buffer the message instead of immediate response
+            await buffer_ai_message(
+                redis=redis,
+                room_id=room_id,
+                sender_id=sender,
+                recipient_id=recipient,
+                message=plain_content,
             )
-
-            # Emit AI response back to sender
-            sender_info = await redis.hgetall(user_info_key(recipient)) if recipient else {}
-            await sio.emit(
-                "private_message",
-                {
-                    "sender": recipient,
-                    "sender_username": character.get("name", ""),
-                    "sender_profile_picture": sender_info.get("user_profile_picture", ""),
-                    "plain_content": ai_response,
-                    "room_id": room_id,
-                    "temporary_id": f"ai_{temporary_id}",
+            logger.info(
+                "Buffered AI message",
+                extra={
+                    "json_fields": {
+                        "room_id": room_id,
+                        "sender_id": sender,
+                        "recipient_id": recipient,
+                        "operation": "buffer_ai_message",
+                    },
+                    "labels": {"component": "ai_chat_buffer"},
                 },
-                room=f"user:{sender}",
-            )
-
-            # Store AI response message
-            await mongo.chat_messages.insert_one(
-                {
-                    "author_id": recipient,
-                    "recipient_id": sender,
-                    "room_id": ObjectId(room_id),
-                    "plain_content": ai_response,
-                    "message_state": MessageState.SENT,
-                }
             )
 
     # Emit to recipient if online
-    if is_online:
+    if is_online and not is_virtual_recipient:
         # Get sender info from cache (fallback to empty strings)
         sender_info = await redis.hgetall(user_info_key(sender)) if sender else {}
         sender_username = sender_info.get("user_username", "")
@@ -580,7 +711,7 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
             message_payload,
             room=f"user:{recipient}",
         )
-    else:
+    elif not is_virtual_recipient:
         # Recipient is offline - send notification
         # Get sender username from cache first, fallback to DB
         sender_info = await redis.hgetall(user_info_key(sender)) if sender else {}
@@ -728,8 +859,8 @@ class ChatRoom(BaseModel):
     participants: List[User]
     created_at: str
     updated_at: str
-    target_user_id: str = None
-    user_public_key: str = None
+    target_user_id: Optional[str] = None
+    user_public_key: Optional[str] = None
     last_message: Optional[ChatMessage] = None
     is_friend: bool = False
 
@@ -858,7 +989,7 @@ async def get_user_chat_rooms(request: Request):
 class CreateChatRoomResponse(BaseModel):
     success: bool
     chat_room_id: str
-    target_public_key: str
+    target_public_key: Optional[str] = None
 
 
 @router.post(
@@ -1262,3 +1393,287 @@ async def public_keys_ui() -> HTMLResponse:
     </html>
     """
     return HTMLResponse(content=html)
+
+
+# ============================================================================
+# AI Message Buffer Worker (Background Task)
+# ============================================================================
+
+
+async def process_ai_buffer(room_id: str, user_id: str) -> None:
+    """
+    Process a ready AI message buffer and generate response.
+    
+    This function:
+    1. Acquires distributed lock
+    2. Gets and clears all buffered messages
+    3. Generates AI response to all messages
+    4. Emits response via Socket.IO
+    5. Stores response in database
+    """
+    redis = get_async_redis_client()
+    
+    # Try to acquire lock (only one instance processes)
+    if not await acquire_buffer_lock(redis, room_id, user_id):
+        return  # Another instance is handling it
+    
+    try:
+        # Get recipient (AI character) ID before clearing buffer
+        recipient_id = await get_buffer_recipient_id(redis, room_id, user_id)
+        if not recipient_id:
+            logger.warning(
+                "No recipient ID in buffer",
+                extra={
+                    "json_fields": {
+                        "room_id": room_id,
+                        "user_id": user_id,
+                        "operation": "process_ai_buffer_no_recipient",
+                    },
+                    "labels": {"component": "ai_chat_buffer"},
+                },
+            )
+            return
+        
+        # Get all messages and clear buffer atomically
+        messages = await get_and_clear_buffer(redis, room_id, user_id)
+        
+        if not messages:
+            return
+        
+        logger.info(
+            "Processing AI buffer",
+            extra={
+                "json_fields": {
+                    "room_id": room_id,
+                    "user_id": user_id,
+                    "recipient_id": recipient_id,
+                    "message_count": len(messages),
+                    "operation": "process_ai_buffer",
+                },
+                "labels": {"component": "ai_chat_buffer"},
+            },
+        )
+        
+        # Get AI character
+        from ment_api.services.ai_character_service import (
+            generate_chat_response,
+            get_character_doc_by_user_id,
+        )
+        
+        character = await get_character_doc_by_user_id(recipient_id)
+        if not character:
+            logger.error(
+                "Character not found for buffer processing",
+                extra={
+                    "json_fields": {
+                        "room_id": room_id,
+                        "recipient_id": recipient_id,
+                        "operation": "process_ai_buffer_no_character",
+                    },
+                    "labels": {"component": "ai_chat_buffer"},
+                },
+            )
+            return
+        
+        # Generate AI response to ALL messages
+        ai_response = await generate_chat_response(
+            character=character,
+            user_id=user_id,
+            user_messages=messages,  # Pass list of messages
+            room_id=ObjectId(room_id),
+        )
+        
+        # Get AI character info for notifications
+        character_name = character.get("name", "")
+        face_images = character.get("face_images", [])
+        ai_profile_picture = face_images[0] if face_images else ""
+        
+        # Check if user is online
+        online_count = await _prune_and_count_online(redis, user_id)
+        is_user_online = online_count > 0
+        
+        if is_user_online:
+            # User is online - emit via Socket.IO
+            await sio.emit(
+                "private_message",
+                {
+                    "sender": recipient_id,
+                    "sender_username": character_name,
+                    "sender_profile_picture": ai_profile_picture,
+                    "plain_content": ai_response,
+                    "room_id": room_id,
+                    "temporary_id": f"ai_batch_{int(time.time() * 1000)}",
+                },
+                room=f"user:{user_id}",
+            )
+        else:
+            # User is offline - send push notification
+            await send_chat_notification(
+                user_id=user_id,
+                message=ai_response,
+                room_id=room_id,
+                message_title=character_name,
+                sender_id=recipient_id,
+                sender_avatar_url=ai_profile_picture,
+                # No encryption for AI messages
+                encrypted_content=None,
+                nonce=None,
+            )
+            logger.info(
+                "Sent AI response notification to offline user",
+                extra={
+                    "json_fields": {
+                        "room_id": room_id,
+                        "user_id": user_id,
+                        "character_name": character_name,
+                        "operation": "ai_buffer_offline_notification",
+                    },
+                    "labels": {"component": "ai_chat_buffer"},
+                },
+            )
+        
+        # Store AI response message
+        await mongo.chat_messages.insert_one(
+            {
+                "author_id": recipient_id,
+                "recipient_id": user_id,
+                "room_id": ObjectId(room_id),
+                "plain_content": ai_response,
+                "message_state": MessageState.SENT,
+            }
+        )
+        
+        logger.info(
+            "AI buffer processed successfully",
+            extra={
+                "json_fields": {
+                    "room_id": room_id,
+                    "user_id": user_id,
+                    "message_count": len(messages),
+                    "response_length": len(ai_response),
+                    "user_online": is_user_online,
+                    "operation": "process_ai_buffer_success",
+                },
+                "labels": {"component": "ai_chat_buffer"},
+            },
+        )
+        
+    except Exception as e:
+        logger.error(
+            f"Error processing AI buffer: {e}",
+            extra={
+                "json_fields": {
+                    "room_id": room_id,
+                    "user_id": user_id,
+                    "error": str(e),
+                    "operation": "process_ai_buffer_error",
+                },
+                "labels": {"component": "ai_chat_buffer", "severity": "high"},
+            },
+        )
+    finally:
+        await release_buffer_lock(redis, room_id, user_id)
+
+
+async def ai_buffer_worker() -> None:
+    """
+    Background worker that polls for ready AI message buffers.
+    
+    This runs on every instance and uses distributed locks to ensure
+    only one instance processes each buffer.
+    """
+    logger.info(
+        "AI buffer worker started",
+        extra={
+            "json_fields": {"operation": "ai_buffer_worker_start"},
+            "labels": {"component": "ai_chat_buffer"},
+        },
+    )
+    
+    redis = get_async_redis_client()
+    
+    while True:
+        try:
+            await asyncio.sleep(1)  # Check every second
+            
+            # Get all active buffers
+            active = await get_active_ai_buffers(redis)
+            if not active:
+                continue
+            
+            now = time.time()
+            
+            for key in active:
+                try:
+                    # Parse room_id:user_id from key
+                    parts = key.split(":", 1)
+                    if len(parts) != 2:
+                        continue
+                    room_id, user_id = parts
+                    
+                    # Check if debounce period has passed
+                    last_ts = await get_buffer_last_timestamp(redis, room_id, user_id)
+                    if last_ts is None:
+                        # Buffer was already processed, clean up tracking
+                        await redis.srem("ai_active_buffers", key)
+                        continue
+                    
+                    if now - last_ts >= AI_MESSAGE_DEBOUNCE_SECONDS:
+                        # Time to process this buffer
+                        await process_ai_buffer(room_id, user_id)
+                        
+                except Exception as e:
+                    logger.error(
+                        f"Error checking buffer {key}: {e}",
+                        extra={
+                            "json_fields": {
+                                "buffer_key": key,
+                                "error": str(e),
+                                "operation": "ai_buffer_worker_check_error",
+                            },
+                            "labels": {"component": "ai_chat_buffer"},
+                        },
+                    )
+                    
+        except Exception as e:
+            logger.error(
+                f"AI buffer worker error: {e}",
+                extra={
+                    "json_fields": {
+                        "error": str(e),
+                        "operation": "ai_buffer_worker_error",
+                    },
+                    "labels": {"component": "ai_chat_buffer", "severity": "high"},
+                },
+            )
+            await asyncio.sleep(5)  # Wait before retrying on error
+
+
+def init_ai_buffer_worker() -> asyncio.Task:
+    """Initialize the AI buffer worker background task."""
+    return asyncio.create_task(ai_buffer_worker())
+
+
+async def cleanup_ai_buffer_worker(task: asyncio.Task) -> None:
+    """Clean up the AI buffer worker task."""
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.error(
+            "Error cleaning up AI buffer worker",
+            extra={
+                "json_fields": {"operation": "ai_buffer_worker_cleanup_error"},
+                "labels": {"component": "ai_chat_buffer"},
+            },
+            exc_info=True,
+        )
+    logger.info(
+        "AI buffer worker stopped",
+        extra={
+            "json_fields": {"operation": "ai_buffer_worker_stop"},
+            "labels": {"component": "ai_chat_buffer"},
+        },
+    )

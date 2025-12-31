@@ -21,6 +21,10 @@ from ment_api.workers.message_state_worker import (
     cleanup_message_state_task,
     init_message_state_task,
 )
+from ment_api.routes.chat import (
+    cleanup_ai_buffer_worker,
+    init_ai_buffer_worker,
+)
 from ment_api.workers.news_worker import (
     process_news_callback,
 )
@@ -76,6 +80,7 @@ async def lifespan(local_app: FastAPI):
         raise
 
     message_state_task = init_message_state_task()
+    ai_buffer_task = init_ai_buffer_worker()
 
     # Initialize subscribers and get their tasks
     (
@@ -151,7 +156,7 @@ async def lifespan(local_app: FastAPI):
     logger.info("Shutting down application")
     redis_service = get_redis_service()
 
-    # Clean up pub/sub subscribers
+    # Clean up pub/sub subscribers and background tasks
     await asyncio.gather(
         close_subscriber(transcoder_task),
         close_subscriber(news_task),
@@ -162,6 +167,7 @@ async def lifespan(local_app: FastAPI):
         close_subscriber(media_post_generator_task),
         close_subscriber(ai_character_task),
         cleanup_message_state_task(message_state_task),
+        cleanup_ai_buffer_worker(ai_buffer_task),
         close_mongo_client(),
         redis_service.aclose(),
         return_exceptions=True,

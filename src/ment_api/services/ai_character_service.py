@@ -21,15 +21,34 @@ from ment_api.services.external_clients.gemini_client import gemini_client
 
 logger = logging.getLogger(__name__)
 
-# Chat system prompt template
-CHAT_SYSTEM_PROMPT = """შენ ხარ {name}, {personality}.
+# Chat system prompt template for single message
+CHAT_SYSTEM_PROMPT = """You are {name}, {personality}.
 
 {chat_personality}
 
-კონტექსტი წინა საუბრებიდან:
+Context from previous conversations:
 {context}
 
-უპასუხე ბუნებრივად ქართულად. მოკლე პასუხები. არ გაიმეორო მომხმარებლის შეტყობინება."""
+Instructions:
+- Respond naturally and keep answers concise.
+- Do not repeat the user's message back to them.
+- Always respond in the same language the user writes to you (e.g., if they write in Georgian, reply in Georgian; if in English, reply in English)."""
+
+# Chat system prompt template for multiple rapid messages
+CHAT_SYSTEM_PROMPT_MULTI = """You are {name}, {personality}.
+
+{chat_personality}
+
+Context from previous conversations:
+{context}
+
+The user has sent multiple messages rapidly in succession.
+Respond to all messages in one natural response, as a human would.
+Do not reply to each message separately - combine everything into one cohesive answer.
+
+Instructions:
+- Respond naturally and keep answers concise.
+- Always respond in the same language the user writes to you (e.g., if they write in Georgian, reply in Georgian; if in English, reply in English)."""
 
 
 async def get_character_by_id(character_id: ObjectId) -> Optional[AICharacterDetail]:
@@ -56,7 +75,7 @@ async def get_character_doc_by_user_id(user_id: str) -> Optional[dict]:
 async def generate_chat_response(
     character: dict,
     user_id: str,
-    user_message: str,
+    user_messages: List[str] | str,
     room_id: Optional[ObjectId] = None,
 ) -> str:
     """
@@ -66,25 +85,35 @@ async def generate_chat_response(
     1. Retrieves relevant memories from past conversations
     2. Builds a context-enhanced prompt
     3. Generates a response using Gemini
-    4. Stores both the user message and AI response as memories
+    4. Stores both the user messages and AI response as memories
 
     Args:
         character: The AI character document
         user_id: The ID of the user chatting
-        user_message: The user's message text
+        user_messages: Single message string OR list of messages (for batched responses)
         room_id: Optional chat room ObjectId
 
     Returns:
         The AI character's response text
     """
     character_id = character["_id"]
+    
+    # Normalize input: support both single string and list of strings
+    if isinstance(user_messages, str):
+        messages_list = [user_messages]
+    else:
+        messages_list = user_messages
+    
+    is_multi_message = len(messages_list) > 1
 
     try:
         # 1. Retrieve relevant context using vector search
+        # Use combined messages for context retrieval
+        query_text = " ".join(messages_list)
         memories = await retrieve_context(
             character_id=character_id,
             user_id=user_id,
-            query=user_message,
+            query=query_text,
             limit=10,
         )
 
@@ -98,32 +127,45 @@ async def generate_chat_response(
         context = "\n".join(context_parts) if context_parts else "პირველი საუბარი"
 
         # 3. Build the system prompt with context
-        system_prompt = CHAT_SYSTEM_PROMPT.format(
-            name=character["name"],
-            personality=character.get("personality", ""),
-            chat_personality=character.get("chat_personality", ""),
-            context=context,
-        )
+        # Use multi-message prompt if user sent multiple messages rapidly
+        if is_multi_message:
+            system_prompt = CHAT_SYSTEM_PROMPT_MULTI.format(
+                name=character["name"],
+                personality=character.get("personality", ""),
+                chat_personality=character.get("chat_personality", ""),
+                context=context,
+            )
+            # Format multiple messages for the AI
+            user_input = "\n".join([f"- {msg}" for msg in messages_list])
+        else:
+            system_prompt = CHAT_SYSTEM_PROMPT.format(
+                name=character["name"],
+                personality=character.get("personality", ""),
+                chat_personality=character.get("chat_personality", ""),
+                context=context,
+            )
+            user_input = messages_list[0]
 
         # 4. Generate response using Gemini
         response = await gemini_client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash-preview",
             contents=[
                 {"role": "user", "parts": [{"text": system_prompt}]},
-                {"role": "user", "parts": [{"text": user_message}]},
+                {"role": "user", "parts": [{"text": user_input}]},
             ],
         )
 
         ai_response = response.text.strip()
 
-        # 5. Store both messages in memory for future context
-        await store_memory(
-            character_id=character_id,
-            user_id=user_id,
-            content=user_message,
-            role="user",
-            room_id=room_id,
-        )
+        # 5. Store all user messages in memory for future context
+        for msg in messages_list:
+            await store_memory(
+                character_id=character_id,
+                user_id=user_id,
+                content=msg,
+                role="user",
+                room_id=room_id,
+            )
 
         await store_memory(
             character_id=character_id,
@@ -142,6 +184,8 @@ async def generate_chat_response(
                     "character_name": character["name"],
                     "user_id": user_id,
                     "context_memories": len(memories),
+                    "message_count": len(messages_list),
+                    "is_batched": is_multi_message,
                     "response_length": len(ai_response),
                 },
                 "labels": {"component": "ai_character_service"},
@@ -157,6 +201,7 @@ async def generate_chat_response(
                 "json_fields": {
                     "operation": "generate_chat_response",
                     "character_id": str(character_id),
+                    "message_count": len(messages_list),
                     "error": str(e),
                 },
                 "labels": {"component": "ai_character_service", "severity": "high"},

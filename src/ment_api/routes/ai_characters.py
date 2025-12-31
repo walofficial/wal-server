@@ -476,20 +476,12 @@ async def chat_with_character(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    character = await get_character_by_id(ObjectId(character_id))
-    if not character:
-        raise HTTPException(status_code=404, detail="Character not found")
-
-    if not character.chat_enabled:
-        raise HTTPException(status_code=400, detail="Chat is disabled for this character")
 
     room_id = ObjectId(chat_request.room_id) if chat_request.room_id else None
 
     # Get raw doc for generate_chat_response (needs dict)
-    character_doc = await mongo.ai_characters.find_one_by_id(ObjectId(character_id))
-
     response = await generate_chat_response(
-        character=character_doc,
+        character_id=ObjectId(character_id),
         user_id=user_id,
         user_message=chat_request.message,
         room_id=room_id,
@@ -498,7 +490,6 @@ async def chat_with_character(
     return AIChatResponse(
         response=response,
         character_id=character_id,
-        character_name=character.name,
     )
 
 
