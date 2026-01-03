@@ -21,9 +21,8 @@ from ment_api.workers.message_state_worker import (
     cleanup_message_state_task,
     init_message_state_task,
 )
-from ment_api.routes.chat import (
-    cleanup_ai_buffer_worker,
-    init_ai_buffer_worker,
+from ment_api.workers.ai_buffer_worker import (
+    process_ai_buffer_pubsub_callback,
 )
 from ment_api.workers.news_worker import (
     process_news_callback,
@@ -80,7 +79,6 @@ async def lifespan(local_app: FastAPI):
         raise
 
     message_state_task = init_message_state_task()
-    ai_buffer_task = init_ai_buffer_worker()
 
     # Initialize subscribers and get their tasks
     (
@@ -92,6 +90,7 @@ async def lifespan(local_app: FastAPI):
         translation_task,
         media_post_generator_task,
         ai_character_task,
+        ai_buffer_task,
     ) = await asyncio.gather(
         initialize_subscriber(
             settings.gcp_project_id,
@@ -148,6 +147,13 @@ async def lifespan(local_app: FastAPI):
             process_ai_character_callback,
             True,
         ),
+        initialize_subscriber(
+            settings.gcp_project_id,
+            settings.pub_sub_ai_buffer_topic_id,
+            settings.pub_sub_ai_buffer_subscription_id,
+            process_ai_buffer_pubsub_callback,
+            True,
+        ),
     )
 
     yield
@@ -166,8 +172,8 @@ async def lifespan(local_app: FastAPI):
         close_subscriber(translation_task),
         close_subscriber(media_post_generator_task),
         close_subscriber(ai_character_task),
+        close_subscriber(ai_buffer_task),
         cleanup_message_state_task(message_state_task),
-        cleanup_ai_buffer_worker(ai_buffer_task),
         close_mongo_client(),
         redis_service.aclose(),
         return_exceptions=True,
