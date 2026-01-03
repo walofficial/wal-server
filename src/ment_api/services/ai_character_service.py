@@ -111,12 +111,7 @@ async def generate_chat_response(
         # 1. Retrieve relevant context using vector search
         # Use combined messages for context retrieval
         query_text = " ".join(messages_list)
-        memories = await retrieve_context(
-            character_id=character_id,
-            user_id=user_id,
-            query=query_text,
-            limit=10,
-        )
+        memories = []
 
         # 2. Build context string from retrieved memories
         context_parts = []
