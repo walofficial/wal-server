@@ -679,6 +679,8 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
                         "sender_id": sender,
                         "recipient_id": recipient,
                         "operation": "buffer_ai_message",
+                        "is_online": is_online,
+                        "is_virtual_recipient": is_virtual_recipient,
                     },
                     "labels": {"component": "ai_chat_buffer"},
                 },
