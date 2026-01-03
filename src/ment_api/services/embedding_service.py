@@ -20,6 +20,7 @@ class EmbeddingService:
             return []
 
         try:
+            logger.info(f"Generating embeddings for {len(texts)} texts")
             response = await gemini_client.aio.models.embed_content(
                 model="gemini-embedding-001",
                 contents=texts,

@@ -110,27 +110,20 @@ async def buffer_ai_message(
     pipe.set(ts_key, str(time.time()), ex=AI_MESSAGE_BUFFER_TTL)
     await pipe.execute()
 
-    # Publish to Pub/Sub to trigger processing (handles debounce via Cloud Tasks)
+    # Schedule AI buffer processing directly (faster than Pub/Sub for latency-sensitive chat)
     try:
-        from ment_api.services.pub_sub_service import publish_message
+        from ment_api.workers.ai_buffer_worker import schedule_ai_buffer_processing
 
-        await publish_message(
-            project_id=settings.gcp_project_id,
-            topic_id=settings.pub_sub_ai_buffer_topic_id,
-            data=json.dumps({
-                "room_id": room_id,
-                "user_id": sender_id,
-            }).encode("utf-8"),
-        )
+        await schedule_ai_buffer_processing(room_id, sender_id)
     except Exception as e:
         logger.error(
-            f"Failed to publish AI buffer message: {e}",
+            f"Failed to schedule AI buffer processing: {e}",
             extra={
                 "json_fields": {
                     "room_id": room_id,
                     "sender_id": sender_id,
                     "error": str(e),
-                    "operation": "buffer_ai_message_publish_error",
+                    "operation": "buffer_ai_message_schedule_error",
                 },
                 "labels": {"component": "ai_chat_buffer", "severity": "high"},
             },
