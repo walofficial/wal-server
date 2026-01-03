@@ -276,6 +276,14 @@ async def process_ai_buffer(room_id: str, user_id: str) -> dict:
         )
 
         character = await get_character_doc_by_user_id(recipient_id)
+        logger.info(
+            "Character found for buffer processing",
+            extra={
+                "json_fields": {
+                    "has_character": bool(character),
+                },
+            },
+        )
         if not character:
             logger.error(
                 "Character not found for buffer processing",
@@ -308,7 +316,14 @@ async def process_ai_buffer(room_id: str, user_id: str) -> dict:
 
         online_count = await _prune_and_count_online(redis, user_id)
         is_user_online = online_count > 0
-
+        logger.info(
+            "User online status",
+            extra={
+                "json_fields": {
+                    "is_user_online": is_user_online,
+                },
+            },
+        )
         if is_user_online:
             # User is online - emit via Socket.IO
             await sio.emit(
