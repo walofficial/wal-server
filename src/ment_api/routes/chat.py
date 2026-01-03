@@ -25,6 +25,19 @@ from ment_api.services.notification_service import send_notification
 from ment_api.services.redis_service import get_async_redis_client
 from ment_api.workers.message_state_worker import message_state_channel
 
+# Import shared chat utilities
+from ment_api.services.chat_utils import (
+    PRESENCE_SID_TTL_SECONDS,
+    PRESENCE_ONLINE_WINDOW_SECONDS,
+    user_sids_key,
+    sid_user_key,
+    sid_device_key,
+    user_info_key,
+    _now_epoch_seconds,
+    _prune_and_count_online,
+    _touch_presence,
+)
+
 # AI Message Buffer Configuration - now in workers/ai_buffer_worker.py
 # Using Pub/Sub + Cloud Tasks for event-driven processing
 
@@ -50,58 +63,6 @@ redis.call("SET", KEYS[1], ARGV[1])
 local sids = redis.call("ZRANGE", KEYS[2], 0, -1)
 return {prev, sids}
 """
-
-# Presence is soft-state: it must expire if the instance/network dies.
-# Client sends periodic `heartbeat` to refresh these TTLs.
-PRESENCE_SID_TTL_SECONDS = 90
-PRESENCE_ONLINE_WINDOW_SECONDS = 75
-
-
-# Redis key helpers for scalable connection tracking
-def user_sids_key(user_id: str) -> str:
-    # ZSET: member=sid, score=last_seen_epoch_seconds
-    return f"user_presence_sids:{user_id}"
-
-
-def sid_user_key(sid: str) -> str:
-    return f"sid_user:{sid}"
-
-
-def sid_device_key(sid: str) -> str:
-    return f"sid_device:{sid}"
-
-
-def user_info_key(user_id: str) -> str:
-    return f"user_info:{user_id}"
-
-
-def _now_epoch_seconds() -> int:
-    return int(datetime.now(tz=timezone.utc).timestamp())
-
-
-async def _prune_and_count_online(redis, user_id: str) -> int:
-    """Remove stale sids and return number of active sids within online window."""
-    key = user_sids_key(user_id)
-    now = _now_epoch_seconds()
-    min_score = now - PRESENCE_ONLINE_WINDOW_SECONDS
-    pipe = redis.pipeline()
-    pipe.zremrangebyscore(key, 0, min_score - 1)
-    pipe.zcount(key, min_score, "+inf")
-    results = await pipe.execute()
-    # results[0] is removed count, results[1] is active count
-    return int(results[1] or 0)
-
-
-async def _touch_presence(redis, user_id: str, sid: str) -> None:
-    """Mark a sid as recently seen and keep the per-user ZSET bounded."""
-    key = user_sids_key(user_id)
-    now = _now_epoch_seconds()
-    min_score = now - PRESENCE_ONLINE_WINDOW_SECONDS
-    pipe = redis.pipeline()
-    pipe.zadd(key, {sid: now})
-    pipe.expire(key, PRESENCE_SID_TTL_SECONDS)
-    pipe.zremrangebyscore(key, 0, min_score - 1)
-    await pipe.execute()
 
 
 # ============================================================================

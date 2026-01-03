@@ -21,6 +21,8 @@ from typing import Optional
 
 from bson import ObjectId
 
+from ment_api.services.chat_utils import _prune_and_count_online
+
 from ment_api.configurations.config import settings
 from ment_api.models.message_state import MessageState
 from ment_api.persistence import mongo
@@ -312,7 +314,6 @@ async def process_ai_buffer(room_id: str, user_id: str) -> dict:
         ai_profile_picture = face_images[0] if face_images else ""
 
         # Check if user is online
-        from ment_api.routes.chat import _prune_and_count_online
 
         online_count = await _prune_and_count_online(redis, user_id)
         is_user_online = online_count > 0
@@ -384,6 +385,14 @@ async def process_ai_buffer(room_id: str, user_id: str) -> dict:
         }
 
     except Exception as e:
+        logger.info(
+            "Error processing AI buffer",
+            extra={
+                "json_fields": {
+                    "error": str(e),
+                },
+            },
+        )
         logger.error(
             f"Error processing AI buffer: {e}",
             extra={
