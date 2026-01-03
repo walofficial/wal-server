@@ -148,8 +148,8 @@ async def initialize_subscriber(
     # Ensure topic and subscription exist before subscribing
     publisher = await _manager.get_publisher()
     topic_path = publisher.topic_path(project_id, topic_id)
-    await ensure_topic_exists(publisher, topic_path)
-    await ensure_subscription_exists(subscriber, subscription_path, topic_path)
+    # await ensure_topic_exists(publisher, topic_path)
+    # await ensure_subscription_exists(subscriber, subscription_path, topic_path)
 
     # Create and return the subscription task
     task = asyncio.create_task(

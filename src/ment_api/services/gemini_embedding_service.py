@@ -25,11 +25,6 @@ EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIMENSIONS = 768
 
 
-@retry(
-    wait=wait_random_exponential(min=1, max=20),
-    stop=stop_after_attempt(3),
-    before_sleep=before_sleep_log(logger, logging.WARNING),
-)
 async def embed_text(
     text: str,
     task_type: str = "RETRIEVAL_DOCUMENT",

@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class EmbeddingService:
     """Service for generating title embeddings using Gemini text-embedding-001 model"""
 
-    EMBEDDING_DIMENSIONS = 3072
+    EMBEDDING_DIMENSIONS = 768
 
     async def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings for multiple texts asynchronously"""

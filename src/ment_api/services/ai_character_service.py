@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from bson import ObjectId
+from google.genai.types import GenerateContentConfig
 
 from ment_api.models.ai_character import AICharacter, AICharacterDetail
 from ment_api.persistence import mongo
@@ -147,12 +148,15 @@ async def generate_chat_response(
             user_input = messages_list[0]
 
         # 4. Generate response using Gemini
+        logger.info(f"Generating response using Gemini for user input: {user_input}")
         response = await gemini_client.aio.models.generate_content(
-            model="gemini-3-flash-preview",
+            model="gemini-2.5-flash",
             contents=[
-                {"role": "user", "parts": [{"text": system_prompt}]},
-                {"role": "user", "parts": [{"text": user_input}]},
+                user_input
             ],
+             config=GenerateContentConfig(
+                    system_instruction=system_prompt,
+                ),
         )
 
         ai_response = response.text.strip()

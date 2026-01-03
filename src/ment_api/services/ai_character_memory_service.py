@@ -13,10 +13,7 @@ from bson import ObjectId
 
 from ment_api.models.ai_character import MemoryCountResponse, MemoryDetail
 from ment_api.persistence import mongo
-from ment_api.services.gemini_embedding_service import (
-    embed_for_retrieval_document,
-    embed_for_retrieval_query,
-)
+from ment_api.services.embedding_service import embedding_service
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +44,8 @@ async def store_memory(
     """
     try:
         # Generate embedding for the content
-        embedding = await embed_for_retrieval_document(content)
+        embeddings = await embedding_service.generate_embeddings([content])
+        embedding = embeddings[0]
 
         memory_doc = {
             "character_id": character_id,
@@ -124,7 +122,8 @@ async def retrieve_context(
     """
     try:
         # Generate embedding for the query
-        query_embedding = await embed_for_retrieval_query(query)
+        query_embeddings = await embedding_service.generate_embeddings([query])
+        query_embedding = query_embeddings[0]
 
         # MongoDB Atlas Vector Search pipeline with hybrid filtering
         pipeline = [

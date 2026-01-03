@@ -6,7 +6,12 @@ from typing import List, Optional, TypeVar
 import aiohttp
 import PIL.Image
 from google.genai import Client
-from google.genai.types import BlockedReason, GenerateContentConfig, ThinkingConfig
+from google.genai.types import (
+    BlockedReason,
+    GenerateContentConfig,
+    HttpOptions,
+    ThinkingConfig,
+)
 from langfuse import observe
 from tenacity import (
     before_sleep_log,
