@@ -157,23 +157,23 @@ async def generate_chat_response(
 
         ai_response = response.text.strip()
 
-        # 5. Store all user messages in memory for future context
-        for msg in messages_list:
-            await store_memory(
-                character_id=character_id,
-                user_id=user_id,
-                content=msg,
-                role="user",
-                room_id=room_id,
-            )
+        # # 5. Store all user messages in memory for future context
+        # for msg in messages_list:
+        #     await store_memory(
+        #         character_id=character_id,
+        #         user_id=user_id,
+        #         content=msg,
+        #         role="user",
+        #         room_id=room_id,
+        #     )
 
-        await store_memory(
-            character_id=character_id,
-            user_id=user_id,
-            content=ai_response,
-            role="assistant",
-            room_id=room_id,
-        )
+        # await store_memory(
+        #     character_id=character_id,
+        #     user_id=user_id,
+        #     content=ai_response,
+        #     role="assistant",
+        #     room_id=room_id,
+        # )
 
         logger.info(
             "Generated AI character chat response",
