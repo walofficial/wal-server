@@ -98,13 +98,13 @@ async def generate_chat_response(
         The AI character's response text
     """
     character_id = character["_id"]
-    
+
     # Normalize input: support both single string and list of strings
     if isinstance(user_messages, str):
         messages_list = [user_messages]
     else:
         messages_list = user_messages
-    
+
     is_multi_message = len(messages_list) > 1
 
     try:
@@ -144,17 +144,17 @@ async def generate_chat_response(
 
         # 4. Generate response using Gemini
         logger.info(f"Generating response using Gemini for user input: {user_input}")
-        response = await gemini_client.aio.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[
-                user_input
-            ],
-             config=GenerateContentConfig(
-                    system_instruction=system_prompt,
-                ),
-        )
+        # response = await gemini_client.aio.models.generate_content(
+        #     model="gemini-2.5-flash",
+        #     contents=[
+        #         user_input
+        #     ],
+        #      config=GenerateContentConfig(
+        #             system_instruction=system_prompt,
+        #         ),
+        # )
 
-        ai_response = response.text.strip()
+        ai_response = "TEST RESPONSE"
 
         # 5. Store all user messages in memory for future context
         for msg in messages_list:
@@ -406,4 +406,3 @@ async def deactivate_character(character_id: ObjectId) -> bool:
 async def activate_character(character_id: ObjectId) -> bool:
     """Activate an AI character."""
     return await update_character(character_id, {"is_active": True})
-
