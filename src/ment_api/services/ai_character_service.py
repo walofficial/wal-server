@@ -147,15 +147,15 @@ async def generate_chat_response(
 
         # 4. Generate response using Gemini
         logger.info(f"Generating response using Gemini for user input: {user_input}")
-        response = await gemini_client_vertex_ai.aio.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[user_input],
-            config=GenerateContentConfig(
-                system_instruction=system_prompt,
-            ),
-        )
+        # response = await gemini_client_vertex_ai.aio.models.generate_content(
+        #     model="gemini-2.5-flash",
+        #     contents=[user_input],
+        #     config=GenerateContentConfig(
+        #         system_instruction=system_prompt,
+        #     ),
+        # )
 
-        ai_response = response.text.strip()
+        ai_response = "test response"
 
         # # 5. Store all user messages in memory for future context
         # for msg in messages_list:
