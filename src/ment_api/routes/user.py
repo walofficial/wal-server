@@ -11,6 +11,7 @@ from fastapi import (
     Query,
     Request,
 )
+from google.genai.types import GenerateContentConfig
 from pydantic import BaseModel
 from pymongo import UpdateOne
 from redis import Redis
@@ -27,6 +28,7 @@ from ment_api.models.update_verification_visibility_request import (
 from ment_api.models.user import User, UserPhoto
 from ment_api.persistence import mongo
 from ment_api.persistence.mongo import create_translation_projection
+from ment_api.services.external_clients.gemini_client import gemini_client_vertex_ai
 from ment_api.services.profile_placeholder_generator import set_placeholder_avatar
 from ment_api.services.redis_service import get_async_redis_client
 from ment_api.utils.language_utils import normalize_language_code
@@ -45,7 +47,6 @@ class ProfileInformationResponse(BaseModel):
     is_friend: bool
     user_id: str
     bio: Optional[str] = None
-
 
 
 @router.post(
@@ -404,7 +405,6 @@ async def update_user(
         raise HTTPException(status_code=400, detail="update error")
 
 
-
 class FCPResponse(BaseModel):
     ok: bool
     message: str
@@ -434,6 +434,16 @@ async def upsert_fcm(request: Request):
             },
             upsert=True,
         )
+
+        response = await gemini_client_vertex_ai.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=["test response"],
+            config=GenerateContentConfig(
+                system_instruction="test system prompt",
+            ),
+        )
+
+        logging.info(f"Gemini response: {response.text}")
 
         # Remove this token from any other users that may have it
         await mongo.push_notification_tokens.delete_all(
