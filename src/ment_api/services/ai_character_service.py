@@ -18,10 +18,7 @@ from ment_api.services.ai_character_memory_service import (
     retrieve_context,
     store_memory,
 )
-from ment_api.services.external_clients.gemini_client import (
-    gemini_client,
-    gemini_client_vertex_ai,
-)
+from ment_api.services.external_clients.gemini_client import gemini_client
 
 logger = logging.getLogger(__name__)
 
@@ -147,33 +144,33 @@ async def generate_chat_response(
 
         # 4. Generate response using Gemini
         logger.info(f"Generating response using Gemini for user input: {user_input}")
-        # response = await gemini_client_vertex_ai.aio.models.generate_content(
-        #     model="gemini-2.5-flash",
-        #     contents=[user_input],
-        #     config=GenerateContentConfig(
-        #         system_instruction=system_prompt,
-        #     ),
-        # )
+        response = await gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[user_input],
+            config=GenerateContentConfig(
+                system_instruction=system_prompt,
+            ),
+        )
 
-        ai_response = "test response"
+        ai_response = response.text.strip()
 
-        # # 5. Store all user messages in memory for future context
-        # for msg in messages_list:
-        #     await store_memory(
-        #         character_id=character_id,
-        #         user_id=user_id,
-        #         content=msg,
-        #         role="user",
-        #         room_id=room_id,
-        #     )
+        # 5. Store all user messages in memory for future context
+        for msg in messages_list:
+            await store_memory(
+                character_id=character_id,
+                user_id=user_id,
+                content=msg,
+                role="user",
+                room_id=room_id,
+            )
 
-        # await store_memory(
-        #     character_id=character_id,
-        #     user_id=user_id,
-        #     content=ai_response,
-        #     role="assistant",
-        #     room_id=room_id,
-        # )
+        await store_memory(
+            character_id=character_id,
+            user_id=user_id,
+            content=ai_response,
+            role="assistant",
+            room_id=room_id,
+        )
 
         logger.info(
             "Generated AI character chat response",
