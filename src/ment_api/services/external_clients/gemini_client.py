@@ -27,10 +27,17 @@ from ment_api.services.external_clients.models.gemini_models import (
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
-# Initialize Gemini client
-gemini_client = Client(api_key=settings.gcp_genai_key)
+# Initialize Gemini client with REST transport (not gRPC)
+# gRPC has connectivity issues in Cloud Run due to HTTP/2 keep-alive and cold start CPU throttling
+gemini_client = Client(
+    api_key=settings.gcp_genai_key,
+    http_options={"api_version": "v1beta"},
+)
 gemini_client_vertex_ai = Client(
-    vertexai=True, location="global", project=settings.gcp_project_id
+    vertexai=True,
+    location="global",
+    project=settings.gcp_project_id,
+    http_options={"api_version": "v1beta"},
 )
 
 
