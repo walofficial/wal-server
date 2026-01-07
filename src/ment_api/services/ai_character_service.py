@@ -11,8 +11,10 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from bson import ObjectId
+from google.genai.client import Client
 from google.genai.types import GenerateContentConfig
 
+from ment_api.configurations.config import settings
 from ment_api.models.ai_character import AICharacterDetail
 from ment_api.persistence import mongo
 from ment_api.services.ai_character_memory_service import (
@@ -163,18 +165,14 @@ async def generate_chat_response(
         )
 
         try:
-            # Add timeout of 60 seconds for Gemini API call
-            response = await asyncio.wait_for(
-                gemini_client.aio.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=[user_input],
-                    config=GenerateContentConfig(
-                        system_instruction=system_prompt,
-                    ),
+            client = Client(api_key=settings.gcp_genai_key)
+            response = await client.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[user_input],
+                config=GenerateContentConfig(
+                    system_instruction=system_prompt,
                 ),
-                timeout=60.0,
             )
-
             logger.info(
                 "Gemini API call completed successfully",
                 extra={
