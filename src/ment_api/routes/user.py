@@ -2,6 +2,7 @@ import asyncio
 import logging
 from typing import Annotated, Any, List, Optional
 
+from google.genai.types import GenerateContentConfig
 import httpx
 from fastapi import (
     APIRouter,
@@ -28,6 +29,7 @@ from ment_api.models.update_verification_visibility_request import (
 from ment_api.models.user import User, UserPhoto
 from ment_api.persistence import mongo
 from ment_api.persistence.mongo import create_translation_projection
+from ment_api.services.external_clients.gemini_client import gemini_client
 from ment_api.services.profile_placeholder_generator import set_placeholder_avatar
 from ment_api.services.redis_service import get_async_redis_client
 from ment_api.utils.language_utils import normalize_language_code
@@ -424,48 +426,17 @@ async def upsert_fcm(request: Request):
         if not expo_push_token:
             raise HTTPException(status_code=400, detail="expo_push_token is required")
 
-        # Make Gemini API request
-        gemini_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-        gemini_payload = {
-            "contents": [{"parts": [{"text": "How does AI work?"}]}],
-            "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}},
-        }
+        response = await asyncio.wait_for(
+            gemini_client.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=["user_input"],
+                config=GenerateContentConfig(
+                    system_instruction="You are a helpful assistant that can help with FCM token management.",
+                ),
+            ),
+            timeout=60.0,
+        )
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            gemini_response = await client.post(
-                gemini_url,
-                headers={
-                    "x-goog-api-key": settings.gcp_genai_key,
-                    "Content-Type": "application/json",
-                },
-                json=gemini_payload,
-            )
-
-            if gemini_response.status_code == 200:
-                gemini_data = gemini_response.json()
-                logger.info(
-                    "Gemini API request successful",
-                    extra={
-                        "json_fields": {
-                            "operation": "gemini_api_call",
-                            "status": "success",
-                        },
-                        "labels": {"component": "upsert_fcm"},
-                    },
-                )
-            else:
-                logger.error(
-                    "Gemini API request failed",
-                    extra={
-                        "json_fields": {
-                            "operation": "gemini_api_call",
-                            "status": "failed",
-                            "status_code": gemini_response.status_code,
-                            "response": gemini_response.text,
-                        },
-                        "labels": {"component": "upsert_fcm"},
-                    },
-                )
 
         # Update or insert the token for the current user
         update_result = await mongo.push_notification_tokens.update_one(
