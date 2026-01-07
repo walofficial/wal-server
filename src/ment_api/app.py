@@ -67,6 +67,7 @@ class SupabaseAuthMiddleware(BaseHTTPMiddleware):
                 or path.startswith("/get-country")
                 or path.startswith("/live/webhook")
                 or path.startswith("/health")
+                or path == "/ai-characters/test-gemini"
             )
         )
 

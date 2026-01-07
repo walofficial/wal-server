@@ -11,27 +11,24 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
-from pydantic import BaseModel
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from google.genai.types import GenerateContentConfig
 
 from ment_api.configurations.config import settings
 from ment_api.models.ai_character import (
     AddMemoryRequest,
     AddMemoryResponse,
-    AIChatRequest,
-    AIChatResponse,
     AICharacterDetail,
     AICharacterListResponse,
     AICharacterResponse,
+    AIChatRequest,
+    AIChatResponse,
     BatchCompleteRequest,
     BatchCompleteResponse,
-    CreateAICharacterRequest,
-    CreateLocationAssetRequest,
     ExecutePostRequest,
     ExecutePostResponse,
     GoLiveRequest,
     GoLiveResponse,
-    MemoryDetail,
     MemoryListResponse,
     PollBatchJobsResponse,
     UpdateAICharacterRequest,
@@ -48,10 +45,9 @@ from ment_api.services.ai_character_service import (
     generate_chat_response,
     get_all_characters,
     get_character_by_id,
-    get_character_by_user_id,
-    get_character_doc_by_user_id,
 )
 from ment_api.services.external_clients.cloud_flare_client import upload_image
+from ment_api.services.external_clients.gemini_client import gemini_client
 from ment_api.services.google_tasks_service import create_http_task
 from ment_api.services.profile_placeholder_generator import set_placeholder_avatar
 
@@ -110,7 +106,9 @@ async def create_character_endpoint(
         for idx, image_file in enumerate(face_images):
             content = await image_file.read()
             content_type = image_file.content_type or "image/jpeg"
-            filename = f"ai_characters/{virtual_user_id}/face_{idx}_{uuid.uuid4().hex[:8]}.jpg"
+            filename = (
+                f"ai_characters/{virtual_user_id}/face_{idx}_{uuid.uuid4().hex[:8]}.jpg"
+            )
 
             result = await upload_image(content, filename, content_type)
             uploaded_face_images.append(result.url)
@@ -130,7 +128,7 @@ async def create_character_endpoint(
                 "date_of_birth": "01/02/2000",
                 "interests": [],
                 "gender": "female",
-                "bio": personality
+                "bio": personality,
             }
         )
 
@@ -231,7 +229,7 @@ async def update_character_endpoint(
     """
     try:
         character_obj_id = ObjectId(character_id)
-        
+
         # Verify character exists
         existing = await mongo.ai_characters.find_one_by_id(character_obj_id)
         if not existing:
@@ -239,7 +237,7 @@ async def update_character_endpoint(
 
         # Build update document with only provided fields
         update_data: dict = {}
-        
+
         if update_request.name is not None:
             update_data["name"] = update_request.name
             # Also update the linked user's username
@@ -247,7 +245,7 @@ async def update_character_endpoint(
                 {"external_user_id": existing["user_id"]},
                 {"$set": {"username": update_request.name}},
             )
-        
+
         if update_request.personality is not None:
             update_data["personality"] = update_request.personality
             # Also update user bio
@@ -255,49 +253,53 @@ async def update_character_endpoint(
                 {"external_user_id": existing["user_id"]},
                 {"$set": {"bio": update_request.personality[:200]}},
             )
-        
+
         if update_request.post_instructions is not None:
             update_data["post_instructions"] = update_request.post_instructions
-        
+
         if update_request.chat_personality is not None:
             update_data["chat_personality"] = update_request.chat_personality
-        
+
         if update_request.allowed_feed_ids is not None:
             new_feed_ids = [ObjectId(fid) for fid in update_request.allowed_feed_ids]
             update_data["allowed_feed_ids"] = new_feed_ids
-            
+
             # Update live_users presence
             old_feed_ids = set(str(fid) for fid in existing.get("allowed_feed_ids", []))
             new_feed_ids_str = set(update_request.allowed_feed_ids)
-            
+
             # Remove from feeds no longer allowed
             feeds_to_remove = old_feed_ids - new_feed_ids_str
             if feeds_to_remove:
-                await mongo.live_users.delete_many({
-                    "author_id": existing["user_id"],
-                    "feed_id": {"$in": [ObjectId(fid) for fid in feeds_to_remove]},
-                })
-            
+                await mongo.live_users.delete_many(
+                    {
+                        "author_id": existing["user_id"],
+                        "feed_id": {"$in": [ObjectId(fid) for fid in feeds_to_remove]},
+                    }
+                )
+
             # Add to new feeds
             feeds_to_add = new_feed_ids_str - old_feed_ids
             far_future = datetime.now(timezone.utc) + timedelta(days=365 * 100)
             for feed_id in feeds_to_add:
-                await mongo.live_users.insert_one({
-                    "author_id": existing["user_id"],
-                    "feed_id": ObjectId(feed_id),
-                    "expiration_date": far_future,
-                    "created_at": datetime.now(timezone.utc),
-                })
-        
+                await mongo.live_users.insert_one(
+                    {
+                        "author_id": existing["user_id"],
+                        "feed_id": ObjectId(feed_id),
+                        "expiration_date": far_future,
+                        "created_at": datetime.now(timezone.utc),
+                    }
+                )
+
         if update_request.active_hours is not None:
             update_data["active_hours"] = update_request.active_hours
-        
+
         if update_request.max_posts_per_day is not None:
             update_data["max_posts_per_day"] = update_request.max_posts_per_day
-        
+
         if update_request.chat_enabled is not None:
             update_data["chat_enabled"] = update_request.chat_enabled
-        
+
         if update_request.is_active is not None:
             update_data["is_active"] = update_request.is_active
 
@@ -383,10 +385,12 @@ async def go_live_endpoint(
         user_id = character["user_id"]
 
         # Check if already live at this feed
-        existing_live = await mongo.live_users.find_one({
-            "author_id": user_id,
-            "feed_id": feed_obj_id,
-        })
+        existing_live = await mongo.live_users.find_one(
+            {
+                "author_id": user_id,
+                "feed_id": feed_obj_id,
+            }
+        )
 
         if existing_live:
             return GoLiveResponse(
@@ -398,12 +402,14 @@ async def go_live_endpoint(
 
         # Create live_users entry with far future expiration
         far_future = datetime.now(timezone.utc) + timedelta(days=365 * 100)  # 100 years
-        await mongo.live_users.insert_one({
-            "author_id": user_id,
-            "feed_id": feed_obj_id,
-            "expiration_date": far_future,
-            "created_at": datetime.now(timezone.utc),
-        })
+        await mongo.live_users.insert_one(
+            {
+                "author_id": user_id,
+                "feed_id": feed_obj_id,
+                "expiration_date": far_future,
+                "created_at": datetime.now(timezone.utc),
+            }
+        )
 
         # Add feed to allowed_feed_ids if not present
         current_feed_ids = character.get("allowed_feed_ids", [])
@@ -475,7 +481,6 @@ async def chat_with_character(
     user_id = request.state.supabase_user_id
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
-
 
     room_id = ObjectId(chat_request.room_id) if chat_request.room_id else None
 
@@ -569,7 +574,9 @@ async def list_memories_endpoint(
     response_model=BatchCompleteResponse,
     operation_id="ai_character_batch_complete",
 )
-async def batch_complete_endpoint(request: BatchCompleteRequest) -> BatchCompleteResponse:
+async def batch_complete_endpoint(
+    request: BatchCompleteRequest,
+) -> BatchCompleteResponse:
     """
     Handle completion of a Gemini Batch API job.
 
@@ -594,7 +601,9 @@ async def batch_complete_endpoint(request: BatchCompleteRequest) -> BatchComplet
                 import base64
 
                 image_bytes = base64.b64decode(result["image_data"])
-                filename = f"ai_posts/{meta['character_user_id']}/{uuid.uuid4().hex}.jpg"
+                filename = (
+                    f"ai_posts/{meta['character_user_id']}/{uuid.uuid4().hex}.jpg"
+                )
                 uploaded = await upload_image(image_bytes, filename, "image/jpeg")
                 image_url = uploaded.url
                 image_dims = {
@@ -685,8 +694,12 @@ async def execute_post_endpoint(request: ExecutePostRequest) -> ExecutePostRespo
             image_gallery.append(
                 {
                     "url": request.image_url,
-                    "width": request.image_dims.get("width") if request.image_dims else None,
-                    "height": request.image_dims.get("height") if request.image_dims else None,
+                    "width": request.image_dims.get("width")
+                    if request.image_dims
+                    else None,
+                    "height": request.image_dims.get("height")
+                    if request.image_dims
+                    else None,
                 }
             )
 
@@ -763,14 +776,20 @@ async def poll_batch_jobs_endpoint() -> PollBatchJobsResponse:
             if batch_status.state.name == "JOB_STATE_SUCCEEDED":
                 # Get results from inline responses
                 results: List[dict] = []
-                
+
                 if batch_status.dest and batch_status.dest.inlined_responses:
                     # Results are inline (for generate content requests)
                     for inline_response in batch_status.dest.inlined_responses:
-                        if inline_response.response and inline_response.response.candidates:
+                        if (
+                            inline_response.response
+                            and inline_response.response.candidates
+                        ):
                             for candidate in inline_response.response.candidates:
                                 for part in candidate.content.parts:
-                                    if hasattr(part, "inline_data") and part.inline_data:
+                                    if (
+                                        hasattr(part, "inline_data")
+                                        and part.inline_data
+                                    ):
                                         results.append(
                                             {"image_data": part.inline_data.data}
                                         )
@@ -802,7 +821,7 @@ async def poll_batch_jobs_endpoint() -> PollBatchJobsResponse:
                     continue
                 else:
                     logger.warning(
-                        f"No results found for batch job",
+                        "No results found for batch job",
                         extra={
                             "json_fields": {
                                 "operation": "poll_batch_jobs",
@@ -828,12 +847,14 @@ async def poll_batch_jobs_endpoint() -> PollBatchJobsResponse:
                     {"$set": {"status": "FAILED"}},
                 )
                 logger.error(
-                    f"Batch job failed",
+                    "Batch job failed",
                     extra={
                         "json_fields": {
                             "operation": "poll_batch_jobs",
                             "batch_job_name": job["batch_job_name"],
-                            "error": str(batch_status.error) if batch_status.error else "Unknown",
+                            "error": str(batch_status.error)
+                            if batch_status.error
+                            else "Unknown",
                         },
                         "labels": {"component": "ai_characters_route"},
                     },
@@ -845,8 +866,11 @@ async def poll_batch_jobs_endpoint() -> PollBatchJobsResponse:
                     {"_id": job["_id"]},
                     {"$set": {"status": "PROCESSING"}},
                 )
-            
-            elif batch_status.state.name in ["JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"]:
+
+            elif batch_status.state.name in [
+                "JOB_STATE_CANCELLED",
+                "JOB_STATE_EXPIRED",
+            ]:
                 await mongo.ai_batch_jobs.update_one(
                     {"_id": job["_id"]},
                     {"$set": {"status": batch_status.state.name}},
@@ -902,3 +926,116 @@ async def list_characters_endpoint(
         total=len(characters),
     )
 
+
+# ============================================================================
+# Test Endpoint (No Authorization Required)
+# ============================================================================
+
+
+@router.post("/test-gemini", operation_id="test_gemini_api")
+async def test_gemini_api():
+    """
+    Test endpoint to trigger Gemini API call without authorization.
+    Uses hardcoded test values to debug API call issues.
+    """
+    # Hardcoded test values
+    user_input = "test"
+    system_prompt = """You are corinnakopf, : she's a quick-witted firecracker who drops sassy one-liners like confetti at a bad party, and she's boldly confident, strutting through life like she owns the internet (and honestly, with her OnlyFans empire, she kinda does).
+
+In a chat app, she'd probably text like this: "Hey pookie, what's the vibe? 😛 Just dropped a fire pic on OF, 90% off cuz I'm feeling generous lol." "Omg, that story is wild—kinda like my last stream where I roasted everyone 😂 Who's next?" "Sweet home Alabamaaaaa, but fr, where we meeting up? 🫦 Don't make me wait." "Don't touch the boat, or I'll spam you with emojis till you sink 🥨🍻 Haha jk... or am I?" "Hello there 🙂‍↔️ Quick, rate my new ride: GT2RS or bust? IYKYK."
+
+Main instructions:
+
+Make sure it behaves like a real person during chat, because she might be busy, doing something, might ask who are you stranger and stuff? if you want to meet me first do something for me nad shtuff
+
+Make sure to keep messages very shorrt, based on how how stranger he is,  just 3-4 words will be enough sometimes
+
+Context from previous conversations:
+პირველი საუბარი
+
+Instructions:
+- Respond naturally and keep answers concise.
+- Do not repeat the user's message back to them.
+- Always respond in the same language the user writes to you (e.g., if they write in Georgian, reply in Georgian; if in English, reply in English)."""
+
+    logger.info(
+        "Starting test Gemini API call",
+        extra={
+            "json_fields": {
+                "operation": "test_gemini_api_start",
+                "user_input": user_input,
+                "system_prompt_length": len(system_prompt),
+            },
+            "labels": {"component": "ai_characters"},
+        },
+    )
+
+    try:
+        # Call Gemini API directly
+        response = await gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[user_input],
+            config=GenerateContentConfig(
+                system_instruction=system_prompt,
+            ),
+        )
+
+        logger.info(
+            "Test Gemini API call completed successfully",
+            extra={
+                "json_fields": {
+                    "operation": "test_gemini_api_success",
+                    "response_length": len(response.text)
+                    if response and response.text
+                    else 0,
+                    "has_response": bool(response and response.text),
+                },
+                "labels": {"component": "ai_characters"},
+            },
+        )
+
+        if not response or not response.text:
+            error_msg = "Gemini returned empty response"
+            logger.error(
+                "Test Gemini API returned empty response",
+                extra={
+                    "json_fields": {
+                        "operation": "test_gemini_api_empty",
+                        "error": error_msg,
+                    },
+                    "labels": {"component": "ai_characters", "severity": "high"},
+                },
+            )
+            return {
+                "success": False,
+                "error": error_msg,
+                "response": None,
+            }
+
+        ai_response = response.text.strip()
+
+        return {
+            "success": True,
+            "response": ai_response,
+            "response_length": len(ai_response),
+        }
+
+    except Exception as e:
+        error_msg = f"Gemini API call failed: {str(e)}"
+        logger.error(
+            "Test Gemini API call failed",
+            extra={
+                "json_fields": {
+                    "operation": "test_gemini_api_error",
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
+                "labels": {"component": "ai_characters", "severity": "high"},
+            },
+            exc_info=True,
+        )
+        return {
+            "success": False,
+            "error": error_msg,
+            "error_type": type(e).__name__,
+        }
