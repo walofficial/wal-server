@@ -5,6 +5,7 @@ This service handles AI character chat interactions, using RAG to provide
 contextually relevant responses based on conversation history.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -12,10 +13,9 @@ from typing import List, Optional
 from bson import ObjectId
 from google.genai.types import GenerateContentConfig
 
-from ment_api.models.ai_character import AICharacter, AICharacterDetail
+from ment_api.models.ai_character import AICharacterDetail
 from ment_api.persistence import mongo
 from ment_api.services.ai_character_memory_service import (
-    retrieve_context,
     store_memory,
 )
 from ment_api.services.external_clients.gemini_client import gemini_client
@@ -143,16 +143,90 @@ async def generate_chat_response(
             user_input = messages_list[0]
 
         # 4. Generate response using Gemini
-        logger.info(f"Generating response using Gemini for user input: {user_input}")
-        response = await gemini_client.aio.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[user_input],
-            config=GenerateContentConfig(
-                system_instruction=system_prompt,
-            ),
+        logger.info(
+            "Starting Gemini API call",
+            extra={
+                "json_fields": {
+                    "operation": "gemini_generate_content_start",
+                    "character_id": str(character_id),
+                    "user_id": user_id,
+                    "user_input_length": len(user_input),
+                    "user_input_preview": user_input[:100]
+                    if len(user_input) > 100
+                    else user_input,
+                    "system_prompt_length": len(system_prompt),
+                    "model": "gemini-2.5-flash",
+                },
+                "labels": {"component": "ai_character_service"},
+            },
         )
 
-        ai_response = response.text.strip()
+        try:
+            # Add timeout of 60 seconds for Gemini API call
+            response = await asyncio.wait_for(
+                gemini_client.aio.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=[user_input],
+                    config=GenerateContentConfig(
+                        system_instruction=system_prompt,
+                    ),
+                ),
+                timeout=60.0,
+            )
+
+            logger.info(
+                "Gemini API call completed successfully",
+                extra={
+                    "json_fields": {
+                        "operation": "gemini_generate_content_success",
+                        "character_id": str(character_id),
+                        "user_id": user_id,
+                        "response_length": len(response.text)
+                        if response and response.text
+                        else 0,
+                        "has_response": bool(response and response.text),
+                    },
+                    "labels": {"component": "ai_character_service"},
+                },
+            )
+
+            if not response or not response.text:
+                error_msg = "Gemini returned empty response"
+                logger.error(
+                    "Gemini API returned empty response",
+                    extra={
+                        "json_fields": {
+                            "operation": "gemini_generate_content_empty",
+                            "character_id": str(character_id),
+                            "user_id": user_id,
+                            "error": error_msg,
+                        },
+                        "labels": {
+                            "component": "ai_character_service",
+                            "severity": "high",
+                        },
+                    },
+                )
+                raise Exception(error_msg)
+
+            ai_response = response.text.strip()
+
+        except asyncio.TimeoutError:
+            error_msg = "Gemini API call timed out after 60 seconds"
+            logger.error(
+                "Gemini API call timed out",
+                extra={
+                    "json_fields": {
+                        "operation": "gemini_generate_content_timeout",
+                        "character_id": str(character_id),
+                        "user_id": user_id,
+                        "timeout_seconds": 60,
+                        "error": error_msg,
+                    },
+                    "labels": {"component": "ai_character_service", "severity": "high"},
+                },
+            )
+            raise Exception(error_msg)
 
         # 5. Store all user messages in memory for future context
         for msg in messages_list:
