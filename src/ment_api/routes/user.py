@@ -2,6 +2,7 @@ import asyncio
 import logging
 from typing import Annotated, Any, List, Optional
 
+import httpx
 from fastapi import (
     APIRouter,
     Depends,
@@ -11,7 +12,6 @@ from fastapi import (
     Query,
     Request,
 )
-from google.genai.types import GenerateContentConfig
 from pydantic import BaseModel
 from pymongo import UpdateOne
 from redis import Redis
@@ -28,7 +28,6 @@ from ment_api.models.update_verification_visibility_request import (
 from ment_api.models.user import User, UserPhoto
 from ment_api.persistence import mongo
 from ment_api.persistence.mongo import create_translation_projection
-from ment_api.services.external_clients.gemini_client import gemini_client_vertex_ai
 from ment_api.services.profile_placeholder_generator import set_placeholder_avatar
 from ment_api.services.redis_service import get_async_redis_client
 from ment_api.utils.language_utils import normalize_language_code
@@ -46,7 +45,6 @@ class ProfileInformationResponse(BaseModel):
     photos: List[UserPhoto]
     is_friend: bool
     user_id: str
-    bio: Optional[str] = None
 
 
 @router.post(
@@ -395,7 +393,6 @@ async def update_user(
     try:
         external_user_id = request.state.supabase_user_id
         update_data = update_user_request.dict(exclude_none=True)
-
         await mongo.users.update_one(
             {"external_user_id": external_user_id}, {"$set": update_data}
         )
@@ -418,6 +415,7 @@ class FCPResponse(BaseModel):
     responses={500: {"description": "Generation error"}},
 )
 async def upsert_fcm(request: Request):
+    logger = logging.getLogger(__name__)
     try:
         external_user_id = request.state.supabase_user_id
         body = await request.json()
@@ -425,6 +423,49 @@ async def upsert_fcm(request: Request):
 
         if not expo_push_token:
             raise HTTPException(status_code=400, detail="expo_push_token is required")
+
+        # Make Gemini API request
+        gemini_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        gemini_payload = {
+            "contents": [{"parts": [{"text": "How does AI work?"}]}],
+            "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}},
+        }
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            gemini_response = await client.post(
+                gemini_url,
+                headers={
+                    "x-goog-api-key": settings.gcp_genai_key,
+                    "Content-Type": "application/json",
+                },
+                json=gemini_payload,
+            )
+
+            if gemini_response.status_code == 200:
+                gemini_data = gemini_response.json()
+                logger.info(
+                    "Gemini API request successful",
+                    extra={
+                        "json_fields": {
+                            "operation": "gemini_api_call",
+                            "status": "success",
+                        },
+                        "labels": {"component": "upsert_fcm"},
+                    },
+                )
+            else:
+                logger.error(
+                    "Gemini API request failed",
+                    extra={
+                        "json_fields": {
+                            "operation": "gemini_api_call",
+                            "status": "failed",
+                            "status_code": gemini_response.status_code,
+                            "response": gemini_response.text,
+                        },
+                        "labels": {"component": "upsert_fcm"},
+                    },
+                )
 
         # Update or insert the token for the current user
         update_result = await mongo.push_notification_tokens.update_one(
@@ -434,16 +475,6 @@ async def upsert_fcm(request: Request):
             },
             upsert=True,
         )
-
-        response = await gemini_client_vertex_ai.aio.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=["test response"],
-            config=GenerateContentConfig(
-                system_instruction="test system prompt",
-            ),
-        )
-
-        logging.info(f"Gemini response: {response.text}")
 
         # Remove this token from any other users that may have it
         await mongo.push_notification_tokens.delete_all(
@@ -457,8 +488,20 @@ async def upsert_fcm(request: Request):
         else:
             return FCPResponse(ok=True, message="Token already exists for this user")
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logging.error(f"Error in upsert_fcm: {str(e)}")
+        logger.exception(
+            "Error in upsert_fcm",
+            extra={
+                "json_fields": {
+                    "operation": "upsert_fcm",
+                    "error_type": type(e).__name__,
+                    "error_message": str(e) or repr(e),
+                },
+                "labels": {"component": "upsert_fcm"},
+            },
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -796,7 +839,6 @@ async def get_user_profile(
         photos=user.get("photos", []),
         is_friend=is_friend is not None,
         user_id=str(user_id),
-        bio=user.get("bio"),
     )
 
 
