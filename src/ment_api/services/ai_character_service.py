@@ -155,6 +155,7 @@ async def generate_chat_response(
                     if len(user_input) > 100
                     else user_input,
                     "system_prompt_length": len(system_prompt),
+                    "system_prompt": system_prompt,
                     "model": "gemini-2.5-flash",
                 },
                 "labels": {"component": "ai_character_service"},
