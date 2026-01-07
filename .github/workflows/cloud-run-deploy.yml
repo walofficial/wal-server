@@ -14,7 +14,7 @@ env:
   REGION: europe-west3
   REPOSITORY: cloud-run-source-deploy
   SERVICE: wal-server
-  CLOUD_RUN_NAME: wal-server-test1
+  CLOUD_RUN_NAME: mnt-api
   SERVICE_ACCOUNT: "wal-backend-service-account@feisty-wall-394014.iam.gserviceaccount.com"
   WORKLOAD_IDENTITY_PROVIDER: projects/880207287631/locations/global/workloadIdentityPools/github/providers/wal-server
 
