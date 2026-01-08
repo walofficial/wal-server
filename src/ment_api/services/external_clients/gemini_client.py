@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from io import BytesIO
 from typing import List, Optional, TypeVar
 
@@ -29,22 +28,23 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# Disable aiohttp's proxy detection that hangs in Cloud Run
-# Issue: aiohttp uses asyncio.to_thread(get_env_proxy_for_url) which hangs during cold starts
-# because Cloud Run throttles CPU and the thread pool executor stalls
-# Setting no_proxy=* tells aiohttp to skip proxy lookup entirely
-os.environ.setdefault("no_proxy", "*")
-os.environ.setdefault("NO_PROXY", "*")
+# Fix for Cloud Run timeout: aiohttp calls asyncio.to_thread(get_env_proxy_for_url)
+# which hangs during cold starts due to CPU throttling affecting ThreadPoolExecutor.
+# Setting trust_env=False tells aiohttp to skip proxy env var detection entirely.
+_gemini_http_options = {
+    "api_version": "v1beta",
+    "async_client_args": {"trust_env": False},
+}
 
 gemini_client = Client(
     api_key=settings.gcp_genai_key,
-    http_options={"api_version": "v1beta"},
+    http_options=_gemini_http_options,
 )
 gemini_client_vertex_ai = Client(
     vertexai=True,
     location="global",
     project=settings.gcp_project_id,
-    http_options={"api_version": "v1beta"},
+    http_options=_gemini_http_options,
 )
 
 

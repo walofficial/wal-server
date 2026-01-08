@@ -35,7 +35,7 @@ CMD if [ "$ENV" = "dev" ]; then \
     else \
     gunicorn \
     --bind 0.0.0.0:$PORT \
-    --workers 1 \
+    --workers 2 \
     --worker-class uvicorn.workers.UvicornWorker \
     --threads 8 \
     --timeout 0 \
