@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from io import BytesIO
 from typing import List, Optional, TypeVar
 
@@ -27,8 +28,14 @@ from ment_api.services.external_clients.models.gemini_models import (
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
-# Initialize Gemini client with REST transport (not gRPC)
-# gRPC has connectivity issues in Cloud Run due to HTTP/2 keep-alive and cold start CPU throttling
+
+# Disable aiohttp's proxy detection that hangs in Cloud Run
+# Issue: aiohttp uses asyncio.to_thread(get_env_proxy_for_url) which hangs during cold starts
+# because Cloud Run throttles CPU and the thread pool executor stalls
+# Setting no_proxy=* tells aiohttp to skip proxy lookup entirely
+os.environ.setdefault("no_proxy", "*")
+os.environ.setdefault("NO_PROXY", "*")
+
 gemini_client = Client(
     api_key=settings.gcp_genai_key,
     http_options={"api_version": "v1beta"},
