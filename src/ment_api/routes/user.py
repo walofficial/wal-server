@@ -426,18 +426,6 @@ async def upsert_fcm(request: Request):
         if not expo_push_token:
             raise HTTPException(status_code=400, detail="expo_push_token is required")
 
-        response = await asyncio.wait_for(
-            gemini_client.aio.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=["user_input"],
-                config=GenerateContentConfig(
-                    system_instruction="You are a helpful assistant that can help with FCM token management.",
-                ),
-            ),
-            timeout=60.0,
-        )
-
-
         # Update or insert the token for the current user
         update_result = await mongo.push_notification_tokens.update_one(
             {"ownerId": external_user_id},

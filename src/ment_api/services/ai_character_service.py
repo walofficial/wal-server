@@ -18,6 +18,7 @@ from ment_api.configurations.config import settings
 from ment_api.models.ai_character import AICharacterDetail
 from ment_api.persistence import mongo
 from ment_api.services.ai_character_memory_service import (
+    retrieve_context,
     store_memory,
 )
 from ment_api.services.external_clients.gemini_client import gemini_client
@@ -113,7 +114,12 @@ async def generate_chat_response(
         # 1. Retrieve relevant context using vector search
         # Use combined messages for context retrieval
         query_text = " ".join(messages_list)
-        memories = []
+        memories = await retrieve_context(
+            character_id=character_id,
+            user_id=user_id,
+            query=query_text,
+            limit=10,
+        )
 
         # 2. Build context string from retrieved memories
         context_parts = []
@@ -227,23 +233,27 @@ async def generate_chat_response(
             )
             raise Exception(error_msg)
 
-        # 5. Store all user messages in memory for future context
-        for msg in messages_list:
-            await store_memory(
+        # 5. Store all user messages and AI response in memory (in parallel)
+        memory_tasks = [
+            store_memory(
                 character_id=character_id,
                 user_id=user_id,
                 content=msg,
                 role="user",
                 room_id=room_id,
             )
-
-        await store_memory(
-            character_id=character_id,
-            user_id=user_id,
-            content=ai_response,
-            role="assistant",
-            room_id=room_id,
+            for msg in messages_list
+        ]
+        memory_tasks.append(
+            store_memory(
+                character_id=character_id,
+                user_id=user_id,
+                content=ai_response,
+                role="assistant",
+                room_id=room_id,
+            )
         )
+        await asyncio.gather(*memory_tasks)
 
         logger.info(
             "Generated AI character chat response",
