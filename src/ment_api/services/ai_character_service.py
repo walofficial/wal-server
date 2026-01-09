@@ -144,6 +144,7 @@ async def generate_chat_response(
                 personality=character.get("personality", ""),
                 chat_personality=character.get("chat_personality", ""),
                 context=context,
+                INSTRUCTIONS=INSTRUCTIONS,
             )
             # Format multiple messages for the AI
             user_input = "\n".join([f"- {msg}" for msg in messages_list])
@@ -153,6 +154,7 @@ async def generate_chat_response(
                 personality=character.get("personality", ""),
                 chat_personality=character.get("chat_personality", ""),
                 context=context,
+                INSTRUCTIONS=INSTRUCTIONS,
             )
             user_input = messages_list[0]
 
