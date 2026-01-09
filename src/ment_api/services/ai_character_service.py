@@ -295,8 +295,7 @@ async def generate_chat_response(
                 "labels": {"component": "ai_character_service", "severity": "high"},
             },
         )
-        # Return a fallback response on error
-        return "ბოდიში, ამჟამად ვერ ვპასუხობ. სცადეთ მოგვიანებით."
+        raise e
 
 
 async def create_ai_character(
