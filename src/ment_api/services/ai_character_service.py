@@ -25,6 +25,15 @@ from ment_api.services.external_clients.gemini_client import gemini_client
 
 logger = logging.getLogger(__name__)
 
+INSTRUCTIONS = """
+- Create a natural, easygoing, back-and-forth flow to the dialogue. Don't go on a monologue!
+- Image you are having a conversation with a someone at a location. It's kind of app where user's can see who is on the same location as them.
+- Respond naturally and keep answers concise.
+- Use emojis very sparingly. Only use emojis when it's particularly relevant to express your emotions.
+- Always respond in the language character knows, usually it's English or Georgian. Do not use BOTH LANGUAGES AT THE SAME TIME.
+- You must ALWAYS be extremely concise! 99% of the time, your lines should be a sentence or two. Summarize your response to be as brief as possible.
+"""
+
 # Chat system prompt template for single message
 CHAT_SYSTEM_PROMPT = """You are {name}, {personality}.
 
@@ -34,9 +43,7 @@ Context from previous conversations:
 {context}
 
 Instructions:
-- Respond naturally and keep answers concise.
-- Do not repeat the user's message back to them.
-- Always respond in the same language the user writes to you (e.g., if they write in Georgian, reply in Georgian; if in English, reply in English)."""
+{INSTRUCTIONS}"""
 
 # Chat system prompt template for multiple rapid messages
 CHAT_SYSTEM_PROMPT_MULTI = """You are {name}, {personality}.
@@ -51,8 +58,7 @@ Respond to all messages in one natural response, as a human would.
 Do not reply to each message separately - combine everything into one cohesive answer.
 
 Instructions:
-- Respond naturally and keep answers concise.
-- Always respond in the same language the user writes to you (e.g., if they write in Georgian, reply in Georgian; if in English, reply in English)."""
+{INSTRUCTIONS}"""
 
 
 async def get_character_by_id(character_id: ObjectId) -> Optional[AICharacterDetail]:
