@@ -14,10 +14,14 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from socketio import AsyncRedisManager
 
+from fastapi import File, Form, UploadFile
+import uuid
+
 from ment_api.common.custom_object_id import CustomObjectId
 from ment_api.configurations.config import settings
-from ment_api.models.chat_message import ChatMessage
+from ment_api.models.chat_message import ChatMessage, ChatMessageAttachment
 from ment_api.models.message_state import MessageState
+from ment_api.services.external_clients.cloud_flare_client import upload_image
 from ment_api.models.update_message_request import UpdateMessageRequest
 from ment_api.models.user import User
 from ment_api.persistence import mongo, mongo_client
@@ -513,6 +517,9 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
     nonce = data.get("nonce")
     plain_content = data.get("plain_content")
 
+    # Support attachments (images, videos, links)
+    attachments = data.get("attachments")  # List of attachment dicts
+
     logger.info(
         "Forwarding message",
         extra={
@@ -521,6 +528,7 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
                 "recipient": recipient,
                 "room_id": room_id,
                 "is_plain": plain_content is not None,
+                "has_attachments": attachments is not None,
                 "operation": "private_message_forward",
             },
             "labels": {"component": "chat_messages"},
@@ -603,6 +611,10 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
             message_payload["encrypted_content"] = encrypted_content
             message_payload["nonce"] = nonce
 
+        # Include attachments if present
+        if attachments:
+            message_payload["attachments"] = attachments
+
         await sio.emit(
             "private_message",
             message_payload,
@@ -643,6 +655,10 @@ async def private_message(sid: str, data: Dict[str, str]) -> None:
     else:
         message_doc["encrypted_content"] = encrypted_content
         message_doc["nonce"] = nonce
+
+    # Store attachments if present
+    if attachments:
+        message_doc["attachments"] = attachments
 
     await mongo.chat_messages.insert_one(message_doc)
 
@@ -690,6 +706,96 @@ def update_message_state(update_request: UpdateMessageRequest) -> dict[str, bool
     messages = update_request.messages
     message_state_channel.put(messages)
     return {"ok": True}
+
+
+class UploadChatAttachmentResponse(BaseModel):
+    """Response for chat attachment upload."""
+    url: str
+    width: int
+    height: int
+    type: str
+
+
+@router.post(
+    "/upload-attachment",
+    response_model=UploadChatAttachmentResponse,
+    operation_id="upload_chat_attachment",
+    responses={500: {"description": "Upload error"}},
+)
+async def upload_chat_attachment(
+    request: Request,
+    file: UploadFile = File(...),
+    room_id: str = Form(...),
+):
+    """
+    Upload an image attachment for a chat message.
+    Returns the CDN URL and image dimensions.
+    """
+    external_user_id = request.state.supabase_user_id
+
+    # Verify user is part of the room
+    chat_room = await mongo.chat_rooms.find_one({"_id": ObjectId(room_id)})
+    if not chat_room:
+        raise HTTPException(status_code=404, detail="Chat room not found")
+    if external_user_id not in chat_room.get("participants", []):
+        raise HTTPException(status_code=403, detail="Not a participant of this room")
+
+    try:
+        contents = await file.read()
+        content_type = file.content_type or "image/jpeg"
+
+        # Generate unique filename
+        file_extension = ".jpeg"
+        if "png" in content_type:
+            file_extension = ".png"
+        elif "webp" in content_type:
+            file_extension = ".webp"
+
+        filename = f"chat_attachments/{room_id}/{uuid.uuid4().hex}{file_extension}"
+
+        # Upload to cloud storage
+        result = await upload_image(
+            file=contents,
+            destination_file_name=filename,
+            content_type=content_type,
+        )
+
+        logger.info(
+            "Chat attachment uploaded",
+            extra={
+                "json_fields": {
+                    "room_id": room_id,
+                    "user_id": external_user_id,
+                    "url": result.url,
+                    "width": result.width,
+                    "height": result.height,
+                    "operation": "upload_chat_attachment",
+                },
+                "labels": {"component": "chat_attachments"},
+            },
+        )
+
+        return UploadChatAttachmentResponse(
+            url=result.url,
+            width=result.width,
+            height=result.height,
+            type="image",
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Chat attachment upload failed: {e}",
+            extra={
+                "json_fields": {
+                    "room_id": room_id,
+                    "user_id": external_user_id,
+                    "error": str(e),
+                    "operation": "upload_chat_attachment_error",
+                },
+                "labels": {"component": "chat_attachments", "severity": "high"},
+            },
+        )
+        raise HTTPException(status_code=500, detail="Failed to upload attachment")
 
 
 class GetMessagesResponse(BaseModel):

@@ -1,6 +1,15 @@
 from pydantic import BaseModel, Field
 from ment_api.common.custom_object_id import CustomObjectId
-from typing import Optional
+from typing import Optional, List
+
+
+class ChatMessageAttachment(BaseModel):
+    """Attachment model for chat messages (images, videos, links)."""
+    type: str  # "image", "video", "link"
+    url: str
+    width: Optional[int] = None
+    height: Optional[int] = None
+    thumbnail_url: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
@@ -16,6 +25,8 @@ class ChatMessage(BaseModel):
     temporary_id: Optional[str] = None
     # Plain text content for virtual users (AI characters) - no encryption
     plain_content: Optional[str] = None
+    # Attachments (images, videos, links)
+    attachments: Optional[List[ChatMessageAttachment]] = None
 
     def __init__(self, **data):
         super().__init__(**data)
