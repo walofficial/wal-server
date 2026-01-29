@@ -25,6 +25,7 @@ from ment_api.models.ai_character import (
     AIChatResponse,
     BatchCompleteRequest,
     BatchCompleteResponse,
+    DeleteAICharacterResponse,
     ExecutePostRequest,
     ExecutePostResponse,
     GoLiveRequest,
@@ -271,7 +272,7 @@ async def update_character_endpoint(
             # Remove from feeds no longer allowed
             feeds_to_remove = old_feed_ids - new_feed_ids_str
             if feeds_to_remove:
-                await mongo.live_users.delete_many(
+                await mongo.live_users.delete_all(
                     {
                         "author_id": existing["user_id"],
                         "feed_id": {"$in": [ObjectId(fid) for fid in feeds_to_remove]},
@@ -340,6 +341,74 @@ async def update_character_endpoint(
             extra={
                 "json_fields": {
                     "operation": "update_ai_character",
+                    "character_id": character_id,
+                    "error": str(e),
+                },
+                "labels": {"component": "ai_characters_route", "severity": "high"},
+            },
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete(
+    "/{character_id}",
+    response_model=DeleteAICharacterResponse,
+    operation_id="delete_ai_character",
+)
+async def delete_character_endpoint(character_id: str) -> DeleteAICharacterResponse:
+    """Delete an AI character and its related data."""
+    try:
+        character_obj_id = ObjectId(character_id)
+
+        existing = await mongo.ai_characters.find_one_by_id(character_obj_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Character not found")
+
+        user_id = existing.get("user_id")
+        if not user_id:
+            raise HTTPException(status_code=500, detail="Character user_id missing")
+
+        deleted_memories_result = await mongo.ai_character_memories.delete_all(
+            {"character_id": character_obj_id}
+        )
+        deleted_live_users_result = await mongo.live_users.delete_all(
+            {"author_id": user_id}
+        )
+
+        await mongo.ai_characters.delete_one({"_id": character_obj_id})
+
+        # Characters create a virtual user in users.external_user_id
+        await mongo.users.delete_one({"external_user_id": user_id})
+
+        logger.info(
+            "Deleted AI character",
+            extra={
+                "json_fields": {
+                    "operation": "delete_ai_character",
+                    "character_id": character_id,
+                    "user_id": user_id,
+                    "deleted_memories": deleted_memories_result.deleted_count,
+                    "deleted_live_users": deleted_live_users_result.deleted_count,
+                },
+                "labels": {"component": "ai_characters_route"},
+            },
+        )
+
+        return DeleteAICharacterResponse(
+            status="deleted",
+            character_id=character_id,
+            user_id=user_id,
+            deleted_memories=deleted_memories_result.deleted_count,
+            deleted_live_users=deleted_live_users_result.deleted_count,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to delete AI character: {e}",
+            extra={
+                "json_fields": {
+                    "operation": "delete_ai_character",
                     "character_id": character_id,
                     "error": str(e),
                 },

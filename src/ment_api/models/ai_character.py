@@ -101,6 +101,16 @@ class AICharacterResponse(BaseModel):
     name: str
 
 
+class DeleteAICharacterResponse(BaseModel):
+    """Response model for AI character deletion."""
+
+    status: str
+    character_id: str
+    user_id: str
+    deleted_memories: int = 0
+    deleted_live_users: int = 0
+
+
 class AICharacterDetail(BaseModel):
     """Detailed AI character response for GET endpoints."""
 
@@ -514,4 +524,3 @@ class GoLiveResponse(BaseModel):
     character_id: str
     feed_id: str
     message: Optional[str] = None
-
