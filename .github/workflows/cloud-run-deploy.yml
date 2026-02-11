@@ -11,7 +11,7 @@ on:
 
 env:
   PROJECT_ID: feisty-wall-394014
-  REGION: europe-west3
+  REGION: europe-west1
   REPOSITORY: cloud-run-source-deploy
   SERVICE: wal-server
   CLOUD_RUN_NAME: mnt-api
