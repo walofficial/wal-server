@@ -122,6 +122,11 @@ ai_character_memories = BaseMongo("ai_character_memories")
 location_assets = BaseMongo("location_assets")
 ai_batch_jobs = BaseMongo("ai_batch_jobs")
 
+haus_profiles = BaseMongo("haus_profiles")
+haus_houses = BaseMongo("haus_houses")
+haus_events = BaseMongo("haus_events")
+haus_bookings = BaseMongo("haus_bookings")
+
 
 async def initialize_db() -> None:
     logger.info(f"Initializing database: {mongo_client.db}")
@@ -253,6 +258,27 @@ async def initialize_db() -> None:
                 IndexModel([("batch_job_name", ASCENDING)], unique=True),
                 IndexModel([("status", ASCENDING)]),
                 IndexModel([("created_at", DESCENDING)]),
+            ]
+        ),
+        mongo_client.db["haus_profiles"].create_index(
+            [("external_user_id", ASCENDING)], unique=True
+        ),
+        mongo_client.db["haus_houses"].create_index(
+            [("host_external_user_id", ASCENDING)]
+        ),
+        mongo_client.db["haus_events"].create_indexes(
+            [
+                IndexModel([("house_id", ASCENDING), ("starts_at", ASCENDING)]),
+            ]
+        ),
+        mongo_client.db["haus_bookings"].create_indexes(
+            [
+                IndexModel(
+                    [("event_id", ASCENDING), ("guest_external_user_id", ASCENDING)],
+                    unique=True,
+                ),
+                IndexModel([("booking_code", ASCENDING)], unique=True),
+                IndexModel([("event_id", ASCENDING), ("status", ASCENDING)]),
             ]
         ),
     )

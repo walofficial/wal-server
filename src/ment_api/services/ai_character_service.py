@@ -82,6 +82,36 @@ async def get_character_doc_by_user_id(user_id: str) -> Optional[dict]:
     return await mongo.ai_characters.find_one({"user_id": user_id})
 
 
+async def get_active_character_for_feed(feed_id: ObjectId) -> Optional[dict]:
+    """
+    Return one active AI character that is assigned to the given feed and
+    currently within active_hours (in character timezone). Used for geofence
+    enter notifications.
+    """
+    from zoneinfo import ZoneInfo
+
+    now_utc = datetime.now(timezone.utc)
+    characters = await mongo.ai_characters.find_all(
+        {
+            "allowed_feed_ids": feed_id,
+            "is_active": True,
+            "chat_enabled": True,
+        }
+    )
+    for char in characters:
+        tz_name = char.get("timezone", "Asia/Tbilisi")
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo("Asia/Tbilisi")
+        local_hour = now_utc.astimezone(tz).hour
+        active_hours = char.get("active_hours") or []
+        if active_hours and local_hour not in active_hours:
+            continue
+        return char
+    return None
+
+
 async def generate_chat_response(
     character: dict,
     user_id: str,

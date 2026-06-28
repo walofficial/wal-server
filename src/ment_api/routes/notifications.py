@@ -84,7 +84,15 @@ async def get_unread_count(request: Request) -> UnreadCountResponse:
             "to_user_id": external_user_id,
             "read": False,
             "type": {
-                "$in": [NotificationType.VERIFICATION_LIKE, NotificationType.IMPRESSION]
+                "$in": [
+                    NotificationType.VERIFICATION_LIKE,
+                    NotificationType.IMPRESSION,
+                    NotificationType.HAUS_JOIN_REQUEST,
+                    NotificationType.HAUS_PAYMENT_PROOF,
+                    NotificationType.HAUS_BOOKING_APPROVED,
+                    NotificationType.HAUS_BOOKING_REJECTED,
+                    NotificationType.HAUS_CHECKED_IN,
+                ]
             },
         }
     )

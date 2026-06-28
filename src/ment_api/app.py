@@ -21,6 +21,7 @@ from ment_api.routes import (
     feeds,
     friend_routes,
     geofence,
+    haus,
     live_user_actions,
     livekit,
     location_assets,
@@ -162,6 +163,7 @@ app.include_router(reactions.router)
 app.include_router(geofence.router)
 app.include_router(ai_characters.router)
 app.include_router(location_assets.router)
+app.include_router(haus.router)
 
 
 class GetCountryResponse(BaseModel):

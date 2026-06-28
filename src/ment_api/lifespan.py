@@ -36,6 +36,7 @@ from ment_api.workers.media_post_generator_worker import (
 from ment_api.workers.ai_character_worker import (
     process_ai_character_callback,
 )
+from ment_api.workers.geofence_worker import process_geofence_event_callback
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ async def lifespan(local_app: FastAPI):
         # media_post_generator_task,
         ai_character_task,
         ai_buffer_task,
+        geofence_task,
     ) = await asyncio.gather(
         # initialize_subscriber(
         #     settings.gcp_project_id,
@@ -154,6 +156,13 @@ async def lifespan(local_app: FastAPI):
             process_ai_buffer_pubsub_callback,
             True,
         ),
+        initialize_subscriber(
+            settings.gcp_project_id,
+            settings.pub_sub_geofence_topic_id,
+            settings.pub_sub_geofence_subscription_id,
+            process_geofence_event_callback,
+            True,
+        ),
     )
 
     yield
@@ -173,6 +182,7 @@ async def lifespan(local_app: FastAPI):
         # close_subscriber(media_post_generator_task),
         close_subscriber(ai_character_task),
         close_subscriber(ai_buffer_task),
+        close_subscriber(geofence_task),
         cleanup_message_state_task(message_state_task),
         close_mongo_client(),
         redis_service.aclose(),

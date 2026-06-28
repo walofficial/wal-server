@@ -83,3 +83,32 @@ async def get_nearest_locations_for_feeds(
         mapping[feed_id] = (bool(doc.get("inside", 0)), location_obj)
 
     return mapping
+
+
+async def find_feed_id_at_point(lat: float, lng: float) -> Optional[CustomObjectId]:
+    """
+    Resolve which feed (if any) contains the given point, using feed_locations
+    geospatial data. Returns the first feed_id where the point is within radius.
+    """
+    near_point = {
+        "type": "Point",
+        "coordinates": [lng, lat],
+    }
+    pipeline = [
+        {
+            "$geoNear": {
+                "near": near_point,
+                "distanceField": "distance",
+                "spherical": True,
+                "key": "location",
+            }
+        },
+        {"$match": {"$expr": {"$lte": ["$distance", "$radius"]}}},
+        {"$sort": {"distance": 1}},
+        {"$limit": 1},
+        {"$project": {"feed_id": 1, "_id": 0}},
+    ]
+    results = await mongo.feed_locations.aggregate(pipeline)
+    if results and results[0].get("feed_id"):
+        return results[0]["feed_id"]
+    return None

@@ -64,7 +64,9 @@ class Settings(BaseSettings):
     pub_sub_ai_character_topic_id: str 
     pub_sub_ai_character_subscription_id: str 
     pub_sub_ai_buffer_topic_id: str
-    pub_sub_ai_buffer_subscription_id: str 
+    pub_sub_ai_buffer_subscription_id: str
+    pub_sub_geofence_topic_id: str
+    pub_sub_geofence_subscription_id: str
     scrapable_imedi_news_endpiont: str
     scrapable_publika_news_endpiont: str
     scrapable_1tv_news_endpiont: str

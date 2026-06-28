@@ -373,9 +373,10 @@ async def process_posts_individually(
 
     This uses regular Gemini image generation instead of batch.
     """
+    import uuid
+
     from ment_api.services.external_clients.cloud_flare_client import upload_image
     from ment_api.services.google_tasks_service import create_http_task
-    import uuid
 
     scheduled = 0
 
@@ -519,4 +520,3 @@ async def process_ai_character_callback(message) -> None:
             },
         )
         raise
-

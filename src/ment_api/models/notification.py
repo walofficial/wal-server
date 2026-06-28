@@ -13,6 +13,11 @@ class NotificationType(str, Enum):
     IMPRESSION = "impression"
     COMMENT_TAG = "comment_tag"
     COMMENT_REACTION = "comment_reaction"
+    HAUS_JOIN_REQUEST = "haus_join_request"
+    HAUS_PAYMENT_PROOF = "haus_payment_proof"
+    HAUS_BOOKING_APPROVED = "haus_booking_approved"
+    HAUS_BOOKING_REJECTED = "haus_booking_rejected"
+    HAUS_CHECKED_IN = "haus_checked_in"
 
 
 class Notification(BaseModel):
@@ -29,6 +34,10 @@ class Notification(BaseModel):
     # Optional fields for reaction notifications
     comment_id: Optional[CustomObjectId] = None
     reaction_type: Optional[str] = None
+    # Haus (optional)
+    haus_booking_id: Optional[CustomObjectId] = None
+    haus_event_id: Optional[CustomObjectId] = None
+    haus_house_id: Optional[CustomObjectId] = None
 
 
 class NotificationResponse(BaseModel):

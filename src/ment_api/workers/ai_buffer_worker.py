@@ -21,11 +21,10 @@ from typing import Optional
 
 from bson import ObjectId
 
-from ment_api.services.chat_utils import _prune_and_count_online
-
 from ment_api.configurations.config import settings
 from ment_api.models.message_state import MessageState
 from ment_api.persistence import mongo
+from ment_api.services.chat_utils import _prune_and_count_online
 from ment_api.services.google_tasks_service import create_http_task
 from ment_api.services.redis_service import get_async_redis_client
 
@@ -113,9 +112,7 @@ async def get_and_clear_buffer(redis, room_id: str, user_id: str) -> list[str]:
     return messages
 
 
-async def get_buffer_recipient_id(
-    redis, room_id: str, user_id: str
-) -> Optional[str]:
+async def get_buffer_recipient_id(redis, room_id: str, user_id: str) -> Optional[str]:
     """Get the recipient (AI character) ID from buffer."""
     buffer_key = ai_buffer_key(room_id, user_id)
     first_msg = await redis.lindex(buffer_key, 0)
@@ -211,7 +208,7 @@ async def process_ai_buffer(room_id: str, user_id: str) -> dict:
 
     Returns dict with processing result for API response.
     """
-    from ment_api.routes.chat import sio, send_chat_notification
+    from ment_api.routes.chat import send_chat_notification, sio
 
     redis = get_async_redis_client()
 
@@ -228,7 +225,10 @@ async def process_ai_buffer(room_id: str, user_id: str) -> dict:
         task_key = ai_buffer_task_key(room_id, user_id)
         await redis.delete(task_key)
         await schedule_ai_buffer_processing(room_id, user_id)
-        return {"status": "rescheduled", "time_remaining": AI_MESSAGE_DEBOUNCE_SECONDS - time_since_last}
+        return {
+            "status": "rescheduled",
+            "time_remaining": AI_MESSAGE_DEBOUNCE_SECONDS - time_since_last,
+        }
 
     # Try to acquire lock (only one instance processes)
     if not await acquire_buffer_lock(redis, room_id, user_id):
@@ -480,4 +480,3 @@ async def process_ai_buffer_pubsub_callback(message) -> None:
             },
         )
         raise
-
