@@ -37,7 +37,7 @@ async def process_check_fact_callback(message: ReceivedMessage):
         start_time = time.time()
         message_id = message.message.message_id
 
-        delivery_attempt = message.delivery_attempt
+        delivery_attempt = message.delivery_attempt if message.delivery_attempt else 1
 
         try:
             # Parse the event with span tracking
