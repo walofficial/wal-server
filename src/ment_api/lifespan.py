@@ -81,23 +81,25 @@ async def lifespan(local_app: FastAPI):
     message_state_task = init_message_state_task()
 
     # Initialize subscribers and get their tasks
+    # NOTE: transcoder / video_processor / media_post_generator / ai_character /
+    # ai_buffer subscribers are temporarily disabled to reduce resource usage.
     (
-        transcoder_task,
+        # transcoder_task,
         news_task,
         check_fact_task,
         social_media_task,
-        video_processor_task,
+        # video_processor_task,
         translation_task,
-        media_post_generator_task,
-        ai_character_task,
-        ai_buffer_task,
+        # media_post_generator_task,
+        # ai_character_task,
+        # ai_buffer_task,
     ) = await asyncio.gather(
-        initialize_subscriber(
-            settings.gcp_project_id,
-            settings.pub_sub_transcoder_topic_id,
-            settings.pub_sub_transcoder_subscription_id,
-            video_transcode_callback,
-        ),
+        # initialize_subscriber(
+        #     settings.gcp_project_id,
+        #     settings.pub_sub_transcoder_topic_id,
+        #     settings.pub_sub_transcoder_subscription_id,
+        #     video_transcode_callback,
+        # ),
         initialize_subscriber(
             settings.gcp_project_id,
             settings.pub_sub_news_topic_id,
@@ -119,13 +121,13 @@ async def lifespan(local_app: FastAPI):
             process_social_media_callback,
             True,
         ),
-        initialize_subscriber(
-            settings.gcp_project_id,
-            settings.pub_sub_video_processor_topic_id,
-            settings.pub_sub_video_processor_subscription_id,
-            process_video_callback,
-            True,
-        ),
+        # initialize_subscriber(
+        #     settings.gcp_project_id,
+        #     settings.pub_sub_video_processor_topic_id,
+        #     settings.pub_sub_video_processor_subscription_id,
+        #     process_video_callback,
+        #     True,
+        # ),
         initialize_subscriber(
             settings.gcp_project_id,
             settings.pub_sub_translation_topic_id,
@@ -133,27 +135,27 @@ async def lifespan(local_app: FastAPI):
             process_translation_callback,
             True,
         ),
-        initialize_subscriber(
-            settings.gcp_project_id,
-            settings.pub_sub_media_post_generator_topic_id,
-            settings.pub_sub_media_post_generator_subscription_id,
-            process_media_post_generator_callback,
-            True,
-        ),
-        initialize_subscriber(
-            settings.gcp_project_id,
-            settings.pub_sub_ai_character_topic_id,
-            settings.pub_sub_ai_character_subscription_id,
-            process_ai_character_callback,
-            True,
-        ),
-        initialize_subscriber(
-            settings.gcp_project_id,
-            settings.pub_sub_ai_buffer_topic_id,
-            settings.pub_sub_ai_buffer_subscription_id,
-            process_ai_buffer_pubsub_callback,
-            True,
-        ),
+        # initialize_subscriber(
+        #     settings.gcp_project_id,
+        #     settings.pub_sub_media_post_generator_topic_id,
+        #     settings.pub_sub_media_post_generator_subscription_id,
+        #     process_media_post_generator_callback,
+        #     True,
+        # ),
+        # initialize_subscriber(
+        #     settings.gcp_project_id,
+        #     settings.pub_sub_ai_character_topic_id,
+        #     settings.pub_sub_ai_character_subscription_id,
+        #     process_ai_character_callback,
+        #     True,
+        # ),
+        # initialize_subscriber(
+        #     settings.gcp_project_id,
+        #     settings.pub_sub_ai_buffer_topic_id,
+        #     settings.pub_sub_ai_buffer_subscription_id,
+        #     process_ai_buffer_pubsub_callback,
+        #     True,
+        # ),
     )
 
     yield
@@ -164,15 +166,15 @@ async def lifespan(local_app: FastAPI):
 
     # Clean up pub/sub subscribers and background tasks
     await asyncio.gather(
-        close_subscriber(transcoder_task),
+        # close_subscriber(transcoder_task),
         close_subscriber(news_task),
         close_subscriber(check_fact_task),
         close_subscriber(social_media_task),
-        close_subscriber(video_processor_task),
+        # close_subscriber(video_processor_task),
         close_subscriber(translation_task),
-        close_subscriber(media_post_generator_task),
-        close_subscriber(ai_character_task),
-        close_subscriber(ai_buffer_task),
+        # close_subscriber(media_post_generator_task),
+        # close_subscriber(ai_character_task),
+        # close_subscriber(ai_buffer_task),
         cleanup_message_state_task(message_state_task),
         close_mongo_client(),
         redis_service.aclose(),
