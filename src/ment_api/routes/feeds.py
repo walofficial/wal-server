@@ -327,6 +327,8 @@ async def _upsert_live_user_presence(
         external_user_id: The user ID to upsert
         invalidate_cache: Whether to invalidate Redis cache (set to False for batch operations)
     """
+    from pymongo.errors import DuplicateKeyError
+
     from ment_api.services.redis_service import get_async_redis_client
 
     try:
@@ -339,10 +341,6 @@ async def _upsert_live_user_presence(
                 "$setOnInsert": {"created_at": datetime.now(timezone.utc)},
             },
             upsert=True,
-        )
-
-        print(
-            f"Live user presence upserted for feed {feed_id} and user {external_user_id}"
         )
 
         # Invalidate cached live users count for this feed (only if requested)
@@ -361,6 +359,8 @@ async def _upsert_live_user_presence(
                 "labels": {"component": "feeds"},
             },
         )
+    except DuplicateKeyError:
+        pass
     except Exception as e:
         logger.error(
             "Failed to upsert live user presence",

@@ -145,7 +145,9 @@ async def initialize_db() -> None:
         ),
         mongo_client.db["live_users"].create_indexes(
             [
-                IndexModel([("author_id", ASCENDING), ("feed_id", ASCENDING)]),
+                IndexModel(
+                    [("author_id", ASCENDING), ("feed_id", ASCENDING)], unique=True
+                ),
                 IndexModel([("expiration_date", ASCENDING)]),
                 IndexModel([("feed_id", ASCENDING), ("expiration_date", ASCENDING)]),
             ]
