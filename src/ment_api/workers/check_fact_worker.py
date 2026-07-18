@@ -2,7 +2,7 @@ import logging
 import time
 from typing import Dict, List
 
-from google.pubsub_v1 import ReceivedMessage
+from google.cloud.pubsub_v1.subscriber.message import Message
 
 from ment_api.common.custom_object_id import CustomObjectId
 from ment_api.events.news_created_event import NewsCreatedEvent
@@ -21,7 +21,7 @@ MAX_RETRY_ATTEMPTS = 2
 # langfuse is imported directly from langfuse_client
 
 
-async def process_check_fact_callback(message: ReceivedMessage):
+async def process_check_fact_callback(message: Message):
     """
     Process fact check callback with comprehensive Langfuse tracing and idempotency.
 
@@ -35,7 +35,7 @@ async def process_check_fact_callback(message: ReceivedMessage):
         name="process_check_fact_callback"
     ) as worker_span:
         start_time = time.time()
-        message_id = message.message.message_id
+        message_id = message.message_id
 
         delivery_attempt = message.delivery_attempt if message.delivery_attempt else 1
 
@@ -45,7 +45,7 @@ async def process_check_fact_callback(message: ReceivedMessage):
                 name="message_parsing"
             ) as parse_span:
                 news_created_event = NewsCreatedEvent.model_validate_json(
-                    message.message.data.decode()
+                    message.data.decode()
                 )
                 verification_ids = news_created_event.verifications
                 verification_ids_str = [str(v_id) for v_id in verification_ids]
@@ -55,7 +55,7 @@ async def process_check_fact_callback(message: ReceivedMessage):
                 parse_span.update(
                     input={
                         "message_id": message_id,
-                        "raw_data_length": len(message.message.data.decode()),
+                        "raw_data_length": len(message.data.decode()),
                     },
                     output={
                         "verification_count": len(verification_ids),

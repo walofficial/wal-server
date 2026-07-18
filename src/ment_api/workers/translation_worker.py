@@ -1,7 +1,7 @@
 import logging
 import time
 
-from google.pubsub_v1 import ReceivedMessage
+from google.cloud.pubsub_v1.subscriber.message import Message
 
 from langfuse import observe
 from ment_api.events.translation_event import TranslationEvent
@@ -15,16 +15,16 @@ MAX_RETRY_ATTEMPTS = 5
 
 
 @observe()
-async def process_translation_callback(message: ReceivedMessage):
+async def process_translation_callback(message: Message):
     with langfuse.start_as_current_span(name="process_translation_callback"):
         start_time = time.time()
-        message_id = message.message.message_id
+        message_id = message.message_id
 
         langfuse.update_current_trace(
             input={
                 "message_id": message_id,
                 "delivery_attempt": message.delivery_attempt,
-                "message_data_preview": message.message.data.decode()[:200],
+                "message_data_preview": message.data.decode()[:200],
             },
             metadata={
                 "worker_type": "translation",
@@ -35,7 +35,7 @@ async def process_translation_callback(message: ReceivedMessage):
 
         try:
             translation_event = TranslationEvent.model_validate_json(
-                message.message.data.decode()
+                message.data.decode()
             )
 
             verification_id = ObjectId(translation_event.verification_id)

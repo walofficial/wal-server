@@ -13,36 +13,20 @@ from ment_api.persistence.mongo_client import (
     close_mongo_client,
     initialize_mongo_client,
 )
-from ment_api.services.pub_sub_service import close_subscriber, initialize_subscriber
+from ment_api.services.pub_sub_service import SubscriberSpec, SubscriberSupervisor
 from ment_api.services.redis_service import get_redis_service
-from ment_api.services.verification_service import video_transcode_callback
-from ment_api.workers.check_fact_worker import process_check_fact_callback
 from ment_api.workers.message_state_worker import (
     cleanup_message_state_task,
     init_message_state_task,
 )
-from ment_api.workers.ai_buffer_worker import (
-    process_ai_buffer_pubsub_callback,
-)
-from ment_api.workers.news_worker import (
-    process_news_callback,
-)
-from ment_api.workers.social_media_worker import process_social_media_callback
-from ment_api.workers.translation_worker import process_translation_callback
-from ment_api.workers.video_processor_worker import process_video_callback
-from ment_api.workers.media_post_generator_worker import (
-    process_media_post_generator_callback,
-)
-from ment_api.workers.ai_character_worker import (
-    process_ai_character_callback,
-)
+from ment_api.workers.subscriber_registry import build_subscriber_specs
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(local_app: FastAPI):
-    asyncio.gather(
+    await asyncio.gather(
         initialize_mongo_client(),
         initialize_db(),
     )
@@ -80,82 +64,52 @@ async def lifespan(local_app: FastAPI):
 
     message_state_task = init_message_state_task()
 
-    # Initialize subscribers and get their tasks
-    # NOTE: transcoder / video_processor / media_post_generator / ai_character /
-    # ai_buffer subscribers are temporarily disabled to reduce resource usage.
-    (
-        # transcoder_task,
-        news_task,
-        check_fact_task,
-        social_media_task,
-        # video_processor_task,
-        translation_task,
-        # media_post_generator_task,
-        # ai_character_task,
-        # ai_buffer_task,
-    ) = await asyncio.gather(
-        # initialize_subscriber(
-        #     settings.gcp_project_id,
-        #     settings.pub_sub_transcoder_topic_id,
-        #     settings.pub_sub_transcoder_subscription_id,
-        #     video_transcode_callback,
-        # ),
-        initialize_subscriber(
-            settings.gcp_project_id,
-            settings.pub_sub_news_topic_id,
-            settings.pub_sub_news_subscription_id,
-            process_news_callback,
-            True,
-        ),
-        initialize_subscriber(
-            settings.gcp_project_id,
-            settings.pub_sub_check_fact_topic_id,
-            settings.pub_sub_check_fact_subscription_id,
-            process_check_fact_callback,
-            True,
-        ),
-        initialize_subscriber(
-            settings.gcp_project_id,
-            settings.pub_sub_social_media_scrape_topic_id,
-            settings.pub_sub_social_media_scrape_subscription_id,
-            process_social_media_callback,
-            True,
-        ),
-        # initialize_subscriber(
-        #     settings.gcp_project_id,
-        #     settings.pub_sub_video_processor_topic_id,
-        #     settings.pub_sub_video_processor_subscription_id,
-        #     process_video_callback,
-        #     True,
-        # ),
-        initialize_subscriber(
-            settings.gcp_project_id,
-            settings.pub_sub_translation_topic_id,
-            settings.pub_sub_translation_subscription_id,
-            process_translation_callback,
-            True,
-        ),
-        # initialize_subscriber(
-        #     settings.gcp_project_id,
-        #     settings.pub_sub_media_post_generator_topic_id,
-        #     settings.pub_sub_media_post_generator_subscription_id,
-        #     process_media_post_generator_callback,
-        #     True,
-        # ),
-        # initialize_subscriber(
-        #     settings.gcp_project_id,
-        #     settings.pub_sub_ai_character_topic_id,
-        #     settings.pub_sub_ai_character_subscription_id,
-        #     process_ai_character_callback,
-        #     True,
-        # ),
-        # initialize_subscriber(
-        #     settings.gcp_project_id,
-        #     settings.pub_sub_ai_buffer_topic_id,
-        #     settings.pub_sub_ai_buffer_subscription_id,
-        #     process_ai_buffer_pubsub_callback,
-        #     True,
-        # ),
+    # Start Pub/Sub subscribers via the supervisor. Each subscription runs with a
+    # dedicated bounded scheduler, so enabling all of them cannot starve the app.
+    supervisor = SubscriberSupervisor(
+        settings.gcp_project_id, asyncio.get_running_loop()
+    )
+    local_app.state.pubsub_supervisor = supervisor
+
+    specs = [spec for spec in build_subscriber_specs() if spec.enabled]
+    # A single subscriber failing to start (e.g. missing IAM in an environment
+    # whose service account lacks pubsub permissions) must not crash the whole
+    # app; isolate failures so the remaining subscribers still come up.
+    start_results = await asyncio.gather(
+        *(supervisor.start(spec) for spec in specs),
+        return_exceptions=True,
+    )
+    started = [
+        spec.name
+        for spec, result in zip[tuple[SubscriberSpec, BaseException | None]](specs, start_results)
+        if not isinstance(result, BaseException)
+    ]
+    for spec, result in zip(specs, start_results):
+        if isinstance(result, BaseException):
+            logger.error(
+                "Pub/Sub subscriber failed to start; continuing without it",
+                extra={
+                    "json_fields": {
+                        "operation": "pubsub_startup_error",
+                        "subscriber": spec.name,
+                        "subscription_id": spec.subscription_id,
+                        "error": str(result),
+                        "error_type": type(result).__name__,
+                    },
+                    "labels": {"component": "pubsub", "severity": "high"},
+                },
+            )
+
+    logger.info(
+        "Pub/Sub subscribers started",
+        extra={
+            "json_fields": {
+                "operation": "pubsub_startup",
+                "subscriber_count": len(started),
+                "subscribers": started,
+            },
+            "labels": {"component": "pubsub"},
+        },
     )
 
     yield
@@ -164,20 +118,14 @@ async def lifespan(local_app: FastAPI):
     logger.info("Shutting down application")
     redis_service = get_redis_service()
 
-    # Clean up pub/sub subscribers and background tasks
+    # Cancel + drain subscribers first, then tear down the rest.
+    await supervisor.stop()
+
     await asyncio.gather(
-        # close_subscriber(transcoder_task),
-        close_subscriber(news_task),
-        close_subscriber(check_fact_task),
-        close_subscriber(social_media_task),
-        # close_subscriber(video_processor_task),
-        close_subscriber(translation_task),
-        # close_subscriber(media_post_generator_task),
-        # close_subscriber(ai_character_task),
-        # close_subscriber(ai_buffer_task),
         cleanup_message_state_task(message_state_task),
         close_mongo_client(),
         redis_service.aclose(),
+        session.close(),
         return_exceptions=True,
     )
 

@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Awaitable, BinaryIO, Callable, Optional
 
-from google.pubsub_v1 import ReceivedMessage
+from google.cloud.pubsub_v1.subscriber.message import Message
 
 from ment_api.common.custom_object_id import CustomObjectId
 from ment_api.configurations.config import settings
@@ -94,8 +94,8 @@ async def execute_file_verification(
         pass
 
 
-async def video_transcode_callback(message: ReceivedMessage) -> None:
-    message_str = message.message.data.decode("utf-8")
+async def video_transcode_callback(message: Message) -> None:
+    message_str = message.data.decode("utf-8")
     job_data = json.loads(message_str)
     verification_new_sate = (
         VerificationState.READY_FOR_USE

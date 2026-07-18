@@ -6,7 +6,7 @@ import time
 
 import yt_dlp
 from bson import ObjectId
-from google.pubsub_v1 import ReceivedMessage
+from google.cloud.pubsub_v1.subscriber.message import Message
 from langfuse import observe
 
 from ment_api.common.custom_object_id import CustomObjectId
@@ -208,7 +208,7 @@ async def process_video(
     transcript = transcript_result["transcript"]
 
     # Generate the AI summary using the transcript
-    logger.info(f"Generating summary from transcript")
+    logger.info("Generating summary from transcript")
     ai_summary = await generate_summary_from_transcript(
         transcript=transcript,
         video_title=video_title,
@@ -247,7 +247,7 @@ async def process_video(
 
 
 @observe()
-async def process_video_callback(message: ReceivedMessage) -> None:
+async def process_video_callback(message: Message) -> None:
     """
     Process a video processing request from pubsub subscription.
     This handles YouTube audio processing after download.
@@ -282,7 +282,7 @@ async def process_video_callback(message: ReceivedMessage) -> None:
         # Try to extract verification info for cleanup if possible
         try:
             video_event = VideoProcessorEvent.model_validate_json(
-                message.message.data.decode()
+                message.data.decode()
             )
             verification_id = ObjectId(video_event.verification_id)
 
@@ -306,7 +306,7 @@ async def process_video_callback(message: ReceivedMessage) -> None:
         raise
 
 
-async def _process_video_callback_internal(message: ReceivedMessage) -> None:
+async def _process_video_callback_internal(message: Message) -> None:
     """
     Internal function containing the actual video processing logic.
     Separated to allow timeout wrapper in the main callback function.
@@ -316,7 +316,7 @@ async def _process_video_callback_internal(message: ReceivedMessage) -> None:
     external_user_id = None
 
     # Parse the message
-    video_event = VideoProcessorEvent.model_validate_json(message.message.data.decode())
+    video_event = VideoProcessorEvent.model_validate_json(message.data.decode())
     verification_id = ObjectId(video_event.verification_id)
     youtube_url = video_event.youtube_url
     external_user_id = video_event.external_user_id

@@ -65,6 +65,14 @@ class Settings(BaseSettings):
     pub_sub_ai_character_subscription_id: str 
     pub_sub_ai_buffer_topic_id: str
     pub_sub_ai_buffer_subscription_id: str 
+    # Pub/Sub reliability / dead-letter tuning.
+    # When DLQ is enabled, each subscription's dead-letter topic id is derived as
+    # "<topic_id><suffix>" unless a per-subscriber override is supplied in the
+    # registry. The Pub/Sub service agent must have roles/pubsub.publisher on the
+    # DLQ topic and roles/pubsub.subscriber on the subscription for delivery to work.
+    pub_sub_enable_dlq: bool = True
+    pub_sub_dlq_topic_suffix: str = "-dlq"
+    pub_sub_max_delivery_attempts: int = 5
     scrapable_imedi_news_endpiont: str
     scrapable_publika_news_endpiont: str
     scrapable_1tv_news_endpiont: str

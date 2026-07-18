@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List
 
 import httpx
-from google.pubsub_v1 import ReceivedMessage
+from google.cloud.pubsub_v1.subscriber.message import Message
 
 from ment_api.models.location_feed_post import NewsFeedPost, Source
 from ment_api.models.media_post_generator_response import (
@@ -119,9 +119,9 @@ async def _generate_post(articles: List[dict]) -> MediaGeneratedPostResponse | N
     return response.parsed
 
 
-async def process_media_post_generator_callback(message: ReceivedMessage):
+async def process_media_post_generator_callback(message: Message):
     logger.info(
-        f"Processing media post generator callback for {message.message.message_id}"
+        f"Processing media post generator callback for {message.message_id}"
     )
     start = time.time()
 

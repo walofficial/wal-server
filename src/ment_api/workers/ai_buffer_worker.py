@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from bson import ObjectId
+from google.cloud.pubsub_v1.subscriber.message import Message
 
 from ment_api.services.chat_utils import _prune_and_count_online
 
@@ -411,7 +412,7 @@ async def process_ai_buffer(room_id: str, user_id: str) -> dict:
         await release_buffer_lock(redis, room_id, user_id)
 
 
-async def process_ai_buffer_pubsub_callback(message) -> None:
+async def process_ai_buffer_pubsub_callback(message: Message) -> None:
     """
     PubSub callback handler for AI buffer messages.
 

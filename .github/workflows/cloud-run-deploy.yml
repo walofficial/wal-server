@@ -94,6 +94,7 @@ jobs:
           service: ${{ env.CLOUD_RUN_NAME }}-staging
           region: ${{ env.REGION }}
           image: ${{ needs.build.outputs.image }}
+          flags: "--no-cpu-throttling"
 
   deploy-production:
     name: Deploy to Production
@@ -120,6 +121,7 @@ jobs:
           service: ${{ env.CLOUD_RUN_NAME }}
           region: ${{ env.REGION }}
           image: ${{ needs.build.outputs.image }}
+          flags: "--no-cpu-throttling --min-instances=1"
 
       - name: Tag Image as Latest
         if: success()

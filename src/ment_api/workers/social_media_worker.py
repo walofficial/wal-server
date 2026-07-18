@@ -2,7 +2,7 @@ import json
 import logging
 
 from bson import ObjectId
-from google.pubsub_v1 import ReceivedMessage
+from google.cloud.pubsub_v1.subscriber.message import Message
 from langfuse import observe
 
 from ment_api.events.social_media_scrape_event import SocialMediaScrapeEvent
@@ -17,24 +17,24 @@ logger = logging.getLogger(__name__)
 
 
 @observe()
-async def process_social_media_callback(message: ReceivedMessage) -> None:
+async def process_social_media_callback(message: Message) -> None:
     """
     Process a social media scrape request from the pubsub subscription.
     Now uses @observe decorator for automatic tracing following v3 best practices.
     """
-    message_id = message.message.message_id
+    message_id = message.message_id
 
     # Set trace input using v3 pattern with safe context handling
 
     print(f"Processing social media callback for message, id: {message_id}")
-    if not message or not message.message.data:
+    if not message or not message.data:
         logger.error("Received empty message")
 
         return
 
     try:
         # Parse the message data
-        event_data = json.loads(message.message.data.decode("utf-8"))
+        event_data = json.loads(message.data.decode("utf-8"))
         event = SocialMediaScrapeEvent(**event_data)
 
         verification_id = ObjectId(event.verification_id)

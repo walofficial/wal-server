@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from bson import ObjectId
+from google.cloud.pubsub_v1.subscriber.message import Message
 
 from ment_api.configurations.config import settings
 from ment_api.persistence import mongo
@@ -458,7 +459,7 @@ async def pubsub_handler(message: dict):
     return await process_ai_character_trigger(message)
 
 
-async def process_ai_character_callback(message) -> None:
+async def process_ai_character_callback(message: Message) -> None:
     """
     PubSub callback handler for AI character post generation.
 

@@ -1,7 +1,7 @@
 import logging
 import time
 
-from google.pubsub_v1 import ReceivedMessage
+from google.cloud.pubsub_v1.subscriber.message import Message
 
 from ment_api.persistence import mongo
 from ment_api.services.news_service import generate_news
@@ -9,8 +9,8 @@ from ment_api.services.news_service import generate_news
 logger = logging.getLogger(__name__)
 
 
-async def process_news_callback(message: ReceivedMessage):
-    logger.info(f"Processing news callback for {message.message.message_id}")
+async def process_news_callback(message: Message):
+    logger.info(f"Processing news callback for {message.message_id}")
 
     mnt_media_user = await mongo.users.find_one({"username": "walmedia"})
     country_feed = await mongo.feeds.find_one({"feed_title": "რახდება"})
