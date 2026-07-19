@@ -13,7 +13,7 @@ from ment_api.persistence.mongo_client import (
     close_mongo_client,
     initialize_mongo_client,
 )
-from ment_api.services.pub_sub_service import SubscriberSpec, SubscriberSupervisor
+from ment_api.services.pub_sub_service import SubscriberSupervisor
 from ment_api.services.redis_service import get_redis_service
 from ment_api.workers.message_state_worker import (
     cleanup_message_state_task,
@@ -81,7 +81,7 @@ async def lifespan(local_app: FastAPI):
     )
     started = [
         spec.name
-        for spec, result in zip[tuple[SubscriberSpec, BaseException | None]](specs, start_results)
+        for spec, result in zip(specs, start_results)
         if not isinstance(result, BaseException)
     ]
     for spec, result in zip(specs, start_results):
